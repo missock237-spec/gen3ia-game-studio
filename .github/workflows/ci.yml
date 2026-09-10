@@ -30,6 +30,8 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Prisma validate
+        env:
+          DATABASE_URL: 'file:./db/ci.db'
         run: npx prisma validate
 
       - name: Unit tests
