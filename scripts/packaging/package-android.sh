@@ -24,6 +24,11 @@ EOF
 cat > "$WORK/build.gradle" <<'EOF'
 plugins { id 'com.android.application' version '8.5.2' apply false }
 EOF
+cat > "$WORK/gradle.properties" <<'EOF'
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+android.useAndroidX=false
+android.nonTransitiveRClass=true
+EOF
 cat > "$WORK/app/build.gradle" <<EOF
 plugins { id 'com.android.application' }
 android {
@@ -50,7 +55,7 @@ if (ksPath && file(ksPath).exists()) {
   }
   android.buildTypes.release.signingConfig android.signingConfigs.release
 }
-dependencies { implementation 'androidx.appcompat:appcompat:1.7.0' }
+dependencies { }
 EOF
 cat > "$WORK/app/src/main/AndroidManifest.xml" <<'EOF'
 <?xml version="1.0" encoding="utf-8"?>

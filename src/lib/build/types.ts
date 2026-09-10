@@ -26,6 +26,8 @@ export interface BuildContext {
   version: string
   githubRepo: string | null
   githubBranch: string
+  /** scène validée du projet (injectée par l'orchestrateur après PREPARING) */
+  sceneData: unknown
   /** push a log line (persisted, visible live in the UI) */
   log(level: 'info' | 'warn' | 'error', msg: string): Promise<void>
   /** update build status + progress */

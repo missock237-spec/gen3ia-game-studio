@@ -38,14 +38,13 @@ async function createSourceTarball(ctx: BuildContext): Promise<Buffer> {
     archive.on('end', () => resolve())
     archive.on('error', reject)
   })
-  const entries: Array<[string, string]> = [
-    ['src/engine/export-runtime.ts', path.join(root, 'src/engine/export-runtime.ts')],
-    ['scene.json', ''], // injected below from DB by orchestrator via tmp file
-  ]
-  void entries
   const engineDir = path.join(root, 'src/engine')
   for (const f of await fs.readdir(engineDir)) {
     if (f.endsWith('.ts')) archive.file(path.join(engineDir, f), { name: `src/engine/${f}` })
+  }
+  // scène réelle du projet (sérialisée depuis la base par l'orchestrateur)
+  if (ctx.sceneData) {
+    archive.append(JSON.stringify(ctx.sceneData, null, 2), { name: 'scene.json' })
   }
   const pkg = JSON.stringify({
     name: 'gen3ia-build', private: true,
@@ -127,6 +126,7 @@ export const googleCloudBuildProvider: CloudBuildProvider = {
     if (!res.ok) throw new Error(`Cloud Build create failed: ${res.status} ${(await res.text().catch(() => '')).slice(0, 500)}`)
     const op = (await res.json()) as { name: string; metadata?: { build?: { id?: string; logUrl?: string } } }
     const buildId = op.metadata?.build?.id ?? op.name
+    void buildId
     await ctx.log('info', `Cloud Build lancé (operation ${op.name.split('/').pop()})`)
     return { externalId: op.name, externalUrl: op.metadata?.build?.logUrl ?? undefined }
   },

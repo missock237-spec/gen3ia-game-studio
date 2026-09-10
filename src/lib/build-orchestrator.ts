@@ -45,7 +45,7 @@ function makeContext(b: {
   id: string; projectId: string; target: string; profile: string; version: string
   project: { name: string; githubRepo: string | null; githubBranch: string }
   timeoutAt: Date | null
-}): BuildContext {
+}, sceneData?: unknown): BuildContext {
   const buildId = b.id
   const ctx: BuildContext = {
     buildId,
@@ -56,6 +56,7 @@ function makeContext(b: {
     version: b.version,
     githubRepo: b.project.githubRepo,
     githubBranch: b.project.githubBranch,
+    sceneData: sceneData ?? null,
     log: (level, msg) => appendLog(buildId, level, msg),
     setStatus: (status, progress) => setStatus(buildId, status, progress),
     isCancelRequested: async () => {
@@ -148,6 +149,7 @@ export async function runBuild(buildId: string): Promise<void> {
     // ── PREPARING — scene + script validation (all targets) ──
     await ctx.setStatus('PREPARING', 10)
     const scene = await loadValidatedScene(build.projectId, ctx.log)
+    ctx.sceneData = scene // injecté pour les providers distants (tarball GCB)
     await ctx.assertNotTimedOut()
 
     const target = build.target as BuildTarget
