@@ -60,17 +60,19 @@ jobs:
 
       - name: Build + start application (standalone)
         env:
-          DATABASE_URL: 'file:./db/e2e.db'
+          # chemin ABSOLU : en standalone le CWD est .next/standalone
+          DATABASE_URL: 'file:${{ github.workspace }}/db/e2e.db'
         run: |
+          mkdir -p db
           npx prisma db push --skip-generate
           npm run build
-          NODE_ENV=production PORT=3000 bun .next/standalone/server.js &
+          NODE_ENV=production PORT=3000 DATABASE_URL="file:$GITHUB_WORKSPACE/db/e2e.db" bun .next/standalone/server.js &
           echo $! > app.pid
           for i in $(seq 1 30); do
             curl -sf http://localhost:3000/api/health && break
             sleep 2
           done
-          curl -sf http://localhost:3000/api/health || { echo "app non démarrée"; exit 1; }
+          curl -sf http://localhost:3000/api/health || { echo "app non démarrée"; tail -30 dev.log 2>/dev/null; exit 1; }
 
       - name: Start game-server
         run: |
