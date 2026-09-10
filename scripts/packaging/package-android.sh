@@ -100,8 +100,11 @@ if [ ! -f "$WORK/app/src/main/assets/game.html" ]; then
       define: { 'process.env.NODE_ENV': '\"production\"' },
     }).then(r => {
       const fs = require('fs');
-      const scene = JSON.parse(fs.readFileSync('scene-export.json', 'utf8'));
-      const html = '<!DOCTYPE html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1,user-scalable=no\"><style>html,body{margin:0;height:100%;overflow:hidden;background:#0d1117}canvas{display:block;touch-action:none}</style></head><body><canvas id=game></canvas><script>window.__GEN3IA_EXPORT__=' + JSON.stringify(scene) + ';</script><script>' + r.outputFiles[0].text + '</script></body></html>';
+      const scenePath = fs.existsSync('scene-export.json') ? 'scene-export.json' : 'scripts/packaging/demo-scene.json';
+      if (scenePath !== 'scene-export.json') console.warn('[android] WARN scene-export.json absent — scène de démonstration embarquée');
+      const scene = JSON.parse(fs.readFileSync(scenePath, 'utf8'));
+      const payload = JSON.stringify({ scene, quality: 'balanced', version: '$VERSION' }).replace(/<\\/script/gi, '<\\/script');
+      const html = '<!DOCTYPE html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1,user-scalable=no"><style>html,body{margin:0;height:100%;overflow:hidden;background:#0d1117}canvas{display:block;touch-action:none}</style></head><body><canvas id=game></canvas><script>window.__GEN3IA_EXPORT__=' + payload + ';</script><script>' + r.outputFiles[0].text + '</script></body></html>';
       fs.writeFileSync('$WORK/app/src/main/assets/game.html', html);
       console.log('[android] game.html embarqué:', Math.round(html.length/1024), 'KB');
     });

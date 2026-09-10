@@ -28,12 +28,14 @@ jobs:
       - name: Retirer la signature du binaire puis injecter le blob SEA
         shell: pwsh
         run: |
-          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe | Select-Object -First 1).FullName
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1).FullName
           if ($signtool) {
-            Write-Host "signtool: $signtool"
-            & $signtool remove /s dist\gen3ia-server.exe
+            Write-Host "signtool x64: $signtool"
+            try { & $signtool remove /s dist\gen3ia-server.exe }
+            catch { Write-Host "retrait signature ignoré: $_" }
           } else {
-            Write-Host "signtool introuvable — postject gère l'injection directement"
+            Write-Host "signtool x64 introuvable — postject tente l'injection directe"
           }
           npx postject dist\gen3ia-server.exe NODE_SEA_BLOB dist\sea-prep.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
 

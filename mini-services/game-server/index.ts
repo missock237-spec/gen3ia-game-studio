@@ -3,7 +3,7 @@
 // session tokens, entity replication (world.json), input rate limiting,
 // speed validation (anti-cheat), metrics.
 import { createServer } from 'http'
-import { readFileSync, existsSync } from 'fs'
+import { readFileSync, existsSync, writeFileSync } from 'fs'
 import { Server, type Socket } from 'socket.io'
 import { randomUUID } from 'crypto'
 
@@ -17,13 +17,16 @@ const CELL_SIZE = 40 // spatial hash cell (interest grid)
 const MAX_SPEED = 30 // units/s — server clamps faster movement
 const MAX_INPUT_HZ = 30 // input rate limit (anti-spam)
 const MAX_CHAT_PER_10S = 8
+const SESSION_TTL_MS = 30 * 60_000 // sessions sans reconnexion → purge
+const PERSIST_INTERVAL_MS = 60_000 // checkpoint positions (fichier si activé)
+const PERSIST_FILE = process.env.GAME_SERVER_PERSIST_FILE ?? '' // ex: /data/positions.json
 
 // Embedded world (dedicated-server artifact): world.json next to the bundle.
 interface WorldEntity {
   name?: string
   components?: { transform?: { position?: { x?: number; y?: number; z?: number } } }
 }
-interface WorldFile { name?: string; scene?: { entities?: Record<string, WorldEntity> }; server?: { tickRate?: number; snapshotHz?: number; maxSpeed?: number; interestRadius?: number } }
+interface WorldFile { name?: string; scene?: { entities?: Record<string, WorldEntity> }; server?: { tickRate?: number; snapshotHz?: number; maxSpeed?: number; interestRadius?: number; regions?: Array<{ name?: string; zones: string[] }> } }
 let WORLD: WorldFile | null = null
 const WORLD_PATHS = ['world.json', path_cwd() + '/world.json']
 function path_cwd(): string { try { return process.cwd() } catch { return '.' } }
@@ -35,6 +38,18 @@ for (const p of WORLD_PATHS) {
 const TICK_EFF = WORLD?.server?.tickRate ?? TICK_RATE
 const SNAP_EFF = WORLD?.server?.snapshotHz ?? SNAPSHOT_HZ
 const SPEED_EFF = WORLD?.server?.maxSpeed ?? MAX_SPEED
+// AOI configurable : radius réel au-delà du filtre de grille (0 = grille seule)
+const INTEREST_RADIUS = WORLD?.server?.interestRadius ?? 0
+// Régions MMO : regroupement logique de zones (World → Region → Zone).
+// Défini dans world.json (server.regions) sinon une région par défaut par monde.
+interface RegionConfig { name: string; zones: Set<string> }
+const REGIONS: RegionConfig[] = (WORLD?.server?.regions ?? [])
+  .map((r) => ({ name: r.name ?? r.zones[0] ?? 'region-0', zones: new Set(r.zones) }))
+
+function regionOfZone(zone: string): string {
+  for (const r of REGIONS) if (r.zones.has(zone)) return r.name
+  return REGIONS[0]?.name ?? 'region-default'
+}
 
 interface PlayerState {
   id: string
@@ -87,12 +102,20 @@ function gridMove(room: Room, p: PlayerState, x: number, z: number) {
   if (next.cx !== p.cell.cx || next.cz !== p.cell.cz) {
     const prev = room.grid.get(`${p.cell.cx},${p.cell.cz}`)
     prev?.delete(p.id)
-    gridInsert(room, p)
-    p.x = x
+    p.cell = next
+    const k = `${next.cx},${next.cz}`
+    let set = room.grid.get(k)
+    if (!set) { set = new Set(); room.grid.set(k, set) }
+    set.add(p.id)
   }
+  // la position doit TOUJOURS être persistée (bug historique: x figé
+  // dans une même cellule → désynchronisation client/serveur)
+  p.x = x
+  p.z = z
 }
 
-/** AOI: players in the 3x3 cells around p (spatial partitioning). */
+/** AOI: players in the 3x3 cells around p (spatial partitioning),
+ *  filtrés par distance réelle si INTEREST_RADIUS est configuré (world.json). */
 function neighbors(room: Room, p: PlayerState): PlayerState[] {
   const out: PlayerState[] = []
   for (let dx = -1; dx <= 1; dx++) {
@@ -102,7 +125,12 @@ function neighbors(room: Room, p: PlayerState): PlayerState[] {
       for (const id of set) {
         if (id === p.id) continue
         const o = room.players.get(id)
-        if (o) out.push(o)
+        if (!o) continue
+        if (INTEREST_RADIUS > 0) {
+          const d = Math.hypot(o.x - p.x, o.z - p.z)
+          if (d > INTEREST_RADIUS) continue
+        }
+        out.push(o)
       }
     }
   }
@@ -149,11 +177,17 @@ const statsServer = createServer((req, res) => {
       key: r.key,
       projectId: r.projectId,
       zone: r.zone,
+      region: regionOfZone(r.zone),
       players: r.players.size,
       gridCells: r.grid.size,
       staticEntities: r.staticEntities.length,
       msgPerSec: r.msgCount,
       rejectedInputs: r.rejectedInputs,
+    }))
+    const regionsInfo = [...new Set([...rooms.values()].map((r) => regionOfZone(r.zone)))].map((rn) => ({
+      name: rn,
+      zones: REGIONS.find((r) => r.name === rn)?.zones.size ?? 1,
+      players: roomsInfo.filter((r) => r.region === rn).reduce((n, r) => n + r.players, 0),
     }))
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({
@@ -162,6 +196,8 @@ const statsServer = createServer((req, res) => {
       snapshotHz: SNAP_EFF,
       maxSpeed: SPEED_EFF,
       rooms: roomsInfo,
+      regions: regionsInfo,
+      interestRadius: INTEREST_RADIUS,
       totalPlayers: [...rooms.values()].reduce((n, r) => n + r.players.size, 0),
       totalConnections,
       totalRejectedInputs: totalRejected,
@@ -269,10 +305,8 @@ io.on('connection', (socket: Socket) => {
         const nx = player.x + dx * scale
         const nz = player.z + dz * scale
         gridMove(room, player, nx, nz)
-        player.z = nz
       } else {
         gridMove(room, player, data.x, data.z)
-        player.z = data.z
       }
     }
     if (typeof data.y === 'number' && Number.isFinite(data.y)) player.y = data.y
@@ -301,6 +335,35 @@ io.on('connection', (socket: Socket) => {
 
   socket.on('heartbeat', () => {
     if (joined) joined.player.lastSeen = Date.now()
+  })
+
+  // Zone handoff (MMO) : migration d'un joueur vers une autre zone de la même
+  // région/world en préservant son état (position, session, couleur).
+  socket.on('zone:move', (data: { zone?: string }, ack?: (resp: unknown) => void) => {
+    if (!joined) return ack?.({ ok: false, error: 'not-joined' })
+    const target = sanitize(data.zone, 32, '')
+    if (!target) return ack?.({ ok: false, error: 'zone requise' })
+    const { room, player } = joined
+    if (target === room.zone) return ack?.({ ok: true, zone: room.zone, moved: false })
+    const targetRoom = getRoom(room.projectId, target)
+    // sortie propre de l'ancienne zone
+    room.players.delete(player.id)
+    room.grid.get(`${player.cell.cx},${player.cell.cz}`)?.delete(player.id)
+    void socket.leave(room.key)
+    socket.to(room.key).emit('player-left', { playerId: player.id, reason: 'zone-handoff' })
+    // entrée dans la nouvelle zone (état conservé)
+    targetRoom.players.set(player.id, player)
+    gridInsert(targetRoom, player)
+    void socket.join(targetRoom.key)
+    joined = { room: targetRoom, player }
+    socket.emit('zone-changed', {
+      zone: targetRoom.zone,
+      region: regionOfZone(targetRoom.zone),
+      entities: targetRoom.staticEntities,
+      players: [...targetRoom.players.values()].filter((p) => p.id !== player.id),
+    })
+    socket.to(targetRoom.key).emit('player-joined', { player })
+    ack?.({ ok: true, zone: targetRoom.zone, region: regionOfZone(targetRoom.zone) })
   })
 
   socket.on('disconnect', () => {
@@ -349,16 +412,35 @@ setInterval(() => {
       for (const p of all) {
         const socket = p.socketId ? io.sockets.sockets.get(p.socketId) : null
         if (!socket) continue
-        // interest management via spatial hash grid (3x3 cellules)
+        // interest management via spatial hash grid (3x3 cellules + radius AOI)
         const visible = neighbors(room, p)
         socket.emit('snapshot', {
           t: now,
+          zone: room.zone,
+          region: regionOfZone(room.zone),
           players: visible.map((o) => ({ id: o.id, name: o.name, color: o.color, x: o.x, y: o.y, z: o.z, ry: o.ry, anim: o.anim })),
         })
       }
     }
   }
 }, TICK_MS)
+
+// ─────────── purge des sessions expirées + checkpoint positions ───────────
+setInterval(() => {
+  const now = Date.now()
+  for (const [token, p] of sessions) {
+    if (now - p.lastSeen > SESSION_TTL_MS) sessions.delete(token)
+  }
+  if (PERSIST_FILE) {
+    try {
+      const data: Record<string, { x: number; y: number; z: number; zone: string }> = {}
+      for (const room of rooms.values()) {
+        for (const p of room.players.values()) data[p.id] = { x: p.x, y: p.y, z: p.z, zone: room.zone }
+      }
+      writeFileSync(PERSIST_FILE, JSON.stringify({ at: new Date().toISOString(), players: data }))
+    } catch (e) { console.error('persist échec:', e instanceof Error ? e.message : e) }
+  }
+}, PERSIST_INTERVAL_MS)
 
 httpServer.listen(PORT, () => {
   console.log(`GEN3IA multiplayer game server on :${PORT} (tick ${TICK_EFF}Hz, world: ${WORLD ? 'chargé' : 'aucun'})`)
