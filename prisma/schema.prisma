@@ -1,0 +1,256 @@
+// GEN3IA GAME STUDIO — Database Schema (Prisma / SQLite)
+// Production-oriented: constraints, indexes, cascade rules.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────── AUTH & USERS ───────────────────────────
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  name          String
+  passwordHash  String
+  role          String   @default("USER") // USER | ADMIN
+  avatarColor   String   @default("#22c55e")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  projects      Project[]
+  members       ProjectMember[]
+  sessions      Session[]
+  auditEvents   AuditEvent[]
+  aiRequests    AIRequest[]
+  builds        Build[]
+
+  @@index([email])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  userAgent String?
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ─────────────────────────── PROJECTS ───────────────────────────
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  description String   @default("")
+  ownerId     String
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  // Configuration (JSON payloads validated by Zod on write)
+  sceneData    String   @default("{}") // serialized scene graph (entities/components)
+  gameConfig   String   @default("{}") // gameplay config
+  serverConfig String   @default("{}") // multiplayer/server config (maxPlayers, tickRate, region...)
+  aiConfig     String   @default("{}") // AI/LLM config
+  buildConfig  String   @default("{}") // build targets & profiles
+  worldConfig  String   @default("{}") // world streaming cells config
+
+  // Git integration
+  githubRepo    String? // e.g. "owner/name"
+  githubBranch  String  @default("main")
+  lastCommitSha String?
+
+  autoSave    Boolean  @default(true)
+  isArchived  Boolean  @default(false)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members     ProjectMember[]
+  scenes      Scene[]
+  assets      Asset[]
+  snapshots   Snapshot[]
+  builds      Build[]
+  scripts     ScriptFile[]
+
+  @@index([ownerId])
+  @@index([updatedAt])
+}
+
+model ProjectMember {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      String   @default("EDITOR") // OWNER | EDITOR | VIEWER
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, userId])
+  @@index([userId])
+}
+
+model Scene {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  data      String   @default("{}") // serialized scene
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+model ScriptFile {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  path      String // e.g. "scripts/player-controller.ts"
+  language  String   @default("typescript")
+  content   String   @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([projectId, path])
+  @@index([projectId])
+}
+
+model Snapshot {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  label     String   @default("autosave")
+  kind      String   @default("AUTOSAVE") // AUTOSAVE | MANUAL | AI_CHANGE | PRE_BUILD
+  sceneData String
+  createdAt DateTime @default(now())
+
+  @@index([projectId, createdAt])
+}
+
+// ─────────────────────────── ASSETS ───────────────────────────
+
+model Asset {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name        String
+  folder      String   @default("/") // virtual folder path
+  kind        String // model | texture | audio | video | script | shader | font | json | prefab | other
+  mimeType    String
+  size        Int // bytes
+  checksum    String // sha256
+  storageKey  String // key in storage adapter
+  provider    String   @default("local") // local | r2 | gcs
+  metadata    String   @default("{}")
+  version     Int      @default(1)
+  corrupted   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([projectId, folder, name])
+  @@index([projectId, kind])
+  @@index([projectId, folder])
+  @@index([checksum])
+}
+
+// ─────────────────────────── BUILDS ───────────────────────────
+
+model Build {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  target      String // web | android | windows | linux | server
+  profile     String   @default("release") // debug | release
+  status      String   @default("QUEUED") // QUEUED | VALIDATING | BUILDING | TESTING | PACKAGING | UPLOADING | COMPLETED | FAILED | CANCELLED
+  progress    Int      @default(0) // 0..100
+  logs        String   @default("[]") // array of {t, level, msg}
+  artifactKey String?
+  artifactUrl String?
+  artifactSize Int?
+  commitSha   String?
+  workflowId  String?
+  error       String?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([status])
+}
+
+// ─────────────────────────── AI ───────────────────────────
+
+model AIRequest {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId   String?
+  task        String // chat | scene_command | dialogue | quest | code
+  provider    String   @default("zai") // zai | huggingface
+  model       String?
+  prompt      String
+  response    String?
+  tokensIn    Int      @default(0)
+  tokensOut   Int      @default(0)
+  latencyMs   Int      @default(0)
+  status      String   @default("OK") // OK | ERROR
+  error       String?
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([projectId])
+}
+
+// ─────────────────────────── MULTIPLAYER ───────────────────────────
+
+model World {
+  id        String   @id @default(cuid())
+  projectId String
+  name      String   @default("world-0")
+  maxPlayers Int     @default(64)
+  tickRate  Int      @default(20)
+  createdAt DateTime @default(now())
+
+  zones Zone[]
+
+  @@index([projectId])
+}
+
+model Zone {
+  id        String   @id @default(cuid())
+  worldId   String
+  world     World    @relation(fields: [worldId], references: [id], onDelete: Cascade)
+  name      String // "zone-A"...
+  bounds    String   @default("{}") // {min:[x,y,z], max:[x,y,z]}
+  serverId  String? // assigned game server
+  createdAt DateTime @default(now())
+
+  @@index([worldId])
+}
+
+// ─────────────────────────── OBSERVABILITY ───────────────────────────
+
+model AuditEvent {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String // project.create, asset.upload, build.start, auth.login...
+  target    String? // resource id
+  meta      String   @default("{}")
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}
