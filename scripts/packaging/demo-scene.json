@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "name": "GEN3IA Demo Scene",
+  "entities": {
+    "demo-ground": {
+      "id": "demo-ground",
+      "name": "Ground",
+      "transform": { "position": { "x": 0, "y": 0, "z": 0 }, "rotation": { "x": 0, "y": 0, "z": 0 }, "scale": { "x": 40, "y": 1, "z": 40 } },
+      "components": { "mesh": { "shape": "box", "color": "#3f7d3f" }, "collider": { "type": "box" } }
+    },
+    "demo-crate": {
+      "id": "demo-crate",
+      "name": "Crate",
+      "transform": { "position": { "x": 0, "y": 3, "z": 0 }, "rotation": { "x": 0, "y": 0, "z": 0 }, "scale": { "x": 1, "y": 1, "z": 1 } },
+      "components": { "mesh": { "shape": "box", "color": "#a97441" }, "rigidbody": { "mass": 1, "useGravity": true } }
+    },
+    "demo-sun": {
+      "id": "demo-sun",
+      "name": "Sun",
+      "transform": { "position": { "x": 10, "y": 15, "z": 8 }, "rotation": { "x": 0, "y": 0, "z": 0 }, "scale": { "x": 1, "y": 1, "z": 1 } },
+      "components": { "light": { "kind": "directional", "color": "#fff4d6", "intensity": 1.2, "castShadow": true } }
+    }
+  },
+  "rootOrder": ["demo-ground", "demo-crate", "demo-sun"],
+  "environment": { "ambientColor": "#8899bb", "ambientIntensity": 0.55, "shadowsEnabled": true, "postProcessing": true },
+  "worldConfig": { "cellSize": 100, "streamingEnabled": false }
+}

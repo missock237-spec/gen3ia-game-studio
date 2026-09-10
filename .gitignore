@@ -64,3 +64,6 @@ prisma/dev.db
 *.db-journal
 # Exception : le gabarit de configuration SANS secrets doit être versionné
 !.env.example
+dist/
+scene-export.json
+*.log

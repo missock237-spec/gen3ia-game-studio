@@ -5,6 +5,7 @@ import { sceneDocumentSchema } from '../../src/engine/types'
 import { sanitizeKey, signLocalKey, verifyLocalSignature } from '../../src/lib/storage'
 import { sha256 } from '../../src/lib/build/local'
 import { requiredEnvForProvider } from '../../src/lib/build/types'
+import { repairJson } from '../../src/lib/json-repair'
 
 function validScene() {
   return {
@@ -76,5 +77,45 @@ describe('Builds — checksums & fournisseurs', () => {
     expect(requiredEnvForProvider('google-cloud-build')).toContain('GOOGLE_CLOUD_PROJECT')
     expect(requiredEnvForProvider('github-actions')).toContain('GITHUB_TOKEN')
     expect(requiredEnvForProvider('local')).toHaveLength(0)
+  })
+})
+
+describe('IA — réparation JSON malformé', () => {
+  test('JSON malformé (accolade manquante) réparé', () => {
+    // cas réel observé : le modèle a omis une accolade fermante
+    const bad = '{"reply": "ok", "commands": [{"op": "addEntity", "entity": {"name": "Sphere", "components": {"transform": {"position": {"x": 0, "y": 5, "z": 0}}}}]}'
+    const parsed = repairJson(bad) as { commands: { op: string }[] }
+    expect(Array.isArray(parsed.commands)).toBe(true)
+    expect(parsed.commands.length).toBe(1)
+    expect(parsed.commands[0].op).toBe('addEntity')
+  })
+  test('JSON encapsulé dans reply (double encodage) réparé', () => {
+    const inner = JSON.stringify({ reply: 'fait', commands: [{ op: 'deleteEntity', entityId: 'x' }] })
+    const outer = JSON.stringify({ reply: inner, commands: [] })
+    const parsed = repairJson(outer) as { reply: string }
+    expect(typeof parsed.reply).toBe('string')
+    const inner2 = repairJson(parsed.reply) as { commands: unknown[] }
+    expect(inner2.commands.length).toBe(1)
+  })
+  test('virgule traînante réparée', () => {
+    const bad = '{"a": 1, "b": [1, 2,]}'
+    const parsed = repairJson(bad) as { a: number; b: number[] }
+    expect(parsed.a).toBe(1)
+    expect(parsed.b.length).toBe(2)
+  })
+  test('sortie tronquée (maxTokens) récupère le préfixe valide', () => {
+    const full = '{"reply": "r", "commands": [{"op": "addEntity", "entity": {"name": "A"}}, {"op": "addEntity", "entity": {"name": "B"}}]}'
+    const truncated = full.slice(0, full.indexOf('"B"') - 2) // coupe en plein milieu
+    const parsed = repairJson(truncated) as { commands?: unknown[] } | null
+    expect(parsed).not.toBeNull()
+    expect(parsed!.commands!.length).toBeGreaterThanOrEqual(1)
+  })
+  test('texte sans JSON → null (aucune invention)', () => {
+    expect(repairJson('Bonjour, je ne peux pas faire cela.')).toBeNull()
+    expect(repairJson('')).toBeNull()
+  })
+  test('JSON valide intact', () => {
+    const good = '{"reply": "x", "commands": []}'
+    expect(repairJson(good)).toEqual({ reply: 'x', commands: [] })
   })
 })

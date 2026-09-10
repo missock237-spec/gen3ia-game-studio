@@ -4,6 +4,7 @@ import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { apiError, handleApiError, rateLimit } from '@/lib/api-utils'
 import { getAIManager } from '@/lib/ai'
+import { repairJson } from '@/lib/json-repair'
 import { aiCommandPayloadSchema, sceneCommandSchema, type SceneCommand } from '@/engine/types'
 
 const bodySchema = aiCommandPayloadSchema.extend({
@@ -73,30 +74,43 @@ export async function POST(req: NextRequest) {
 
     // command mode: parse structured output, validate every command
     let parsed: { reply?: string; commands?: unknown[] }
+    let repaired = false
     try {
       const cleaned = result.text.replace(/```json|```/g, '').trim()
       const start = cleaned.indexOf('{')
       const end = cleaned.lastIndexOf('}')
       parsed = JSON.parse(cleaned.slice(start, end + 1))
-      // Défense : certains modèles encapsulent tout le JSON dans "reply".
-      // Si aucune commande mais que "reply" est lui-même du JSON → re-parse.
-      if (
-        (!parsed.commands || (Array.isArray(parsed.commands) && parsed.commands.length === 0)) &&
-        typeof parsed.reply === 'string' &&
-        parsed.reply.trim().startsWith('{')
-      ) {
-        try {
-          const inner = JSON.parse(parsed.reply.replace(/```json|```/g, '').trim())
-          if (inner && Array.isArray(inner.commands)) parsed = inner
-        } catch { /* on garde le parse externe */ }
-      }
     } catch {
-      return NextResponse.json({
-        reply: result.text.slice(0, 2000),
-        commands: [],
-        provider: result.provider,
-        warning: 'Réponse IA non structurée — affichée comme texte',
-      })
+      // Réparation défensive : les modèles émettent parfois un JSON tronqué ou
+      // déséquilibré (ex. accolade fermante manquante). Réparation prouvable
+      // uniquement — sinon on affiche le texte brut, sans inventer de commande.
+      const saved = repairJson(result.text)
+      if (saved && typeof saved === 'object' && Array.isArray((saved as { commands?: unknown[] }).commands)) {
+        parsed = saved as { reply?: string; commands?: unknown[] }
+        repaired = true
+      } else {
+        return NextResponse.json({
+          reply: result.text.slice(0, 2000),
+          commands: [],
+          provider: result.provider,
+          warning: 'Réponse IA non structurée — affichée comme texte',
+        })
+      }
+    }
+    // Défense : certains modèles encapsulent tout le JSON dans "reply".
+    // Si aucune commande mais que "reply" est lui-même du JSON → re-parse.
+    if (
+      (!parsed.commands || (Array.isArray(parsed.commands) && parsed.commands.length === 0)) &&
+      typeof parsed.reply === 'string' &&
+      parsed.reply.trim().startsWith('{')
+    ) {
+      try {
+        const inner = repairJson(parsed.reply)
+        if (inner && Array.isArray((inner as { commands?: unknown[] }).commands)) {
+          parsed = inner as { reply?: string; commands?: unknown[] }
+          repaired = true
+        }
+      } catch { /* on garde le parse externe */ }
     }
 
     const validCommands: SceneCommand[] = []
@@ -114,6 +128,7 @@ export async function POST(req: NextRequest) {
       provider: result.provider,
       model: result.model,
       latencyMs: result.latencyMs,
+      ...(repaired ? { repaired: true } : {}),
     })
   } catch (e) {
     return handleApiError(e)

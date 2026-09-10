@@ -7,12 +7,15 @@ import fs from 'fs'
 const version = process.argv[2] ?? '1.0.0'
 const projectId = process.argv[3] ?? ''
 
-const scenePath = fs.existsSync('scene-export.json') ? 'scene-export.json' : null
-if (!scenePath) {
-  console.error('scene-export.json introuvable — synchronisez le projet depuis GEN3IA (onglet GitHub)')
-  process.exit(1)
+let scene
+if (fs.existsSync('scene-export.json')) {
+  scene = JSON.parse(fs.readFileSync('scene-export.json', 'utf8'))
+  console.log('scène: scene-export.json (projet synchronisé)')
+} else {
+  // Fallback honnête : scène de démonstration validée Zod, clairement signalée.
+  scene = JSON.parse(fs.readFileSync('scripts/packaging/demo-scene.json', 'utf8'))
+  console.warn('WARN scene-export.json absent — scène de démonstration utilisée (sync un projet depuis GEN3IA pour embarquer le vôtre)')
 }
-const scene = JSON.parse(fs.readFileSync(scenePath, 'utf8'))
 
 const result = await esbuild.build({
   entryPoints: ['src/engine/export-runtime.ts'],

@@ -1,10 +1,17 @@
-# GEN3IA — Build Android (APK réel via Gradle, runner ubuntu avec Android SDK).
+# GEN3IA — Build Android : APK/AAB RÉELS via Gradle + Android SDK (runner ubuntu).
+# - assembleDebug  : APK debug signé par défaut
+# - assembleRelease: APK release (signé si secrets ANDROID_* configurés)
+# - bundleRelease  : AAB release
+# Signature release optionnelle via GitHub Secrets :
+#   ANDROID_KEYSTORE_BASE64 (keystore .jks encodé base64)
+#   ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+# Sans secrets → release non signée produite quand même (jamais de faux APK).
 name: Build Android
 on:
   workflow_dispatch:
     inputs:
       version: { description: 'Version sémantique', required: true, default: '1.0.0' }
-      buildProfile: { description: 'Profil (debug|release)', required: false, default: 'release' }
+      buildProfile: { description: 'Profil (debug|release|all)', required: false, default: 'all' }
       artifactName: { description: 'Nom de l artifact', required: false, default: 'gen3ia-android' }
 jobs:
   apk:
@@ -14,8 +21,24 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
       - uses: android-actions/setup-android@v3
-      - name: Package WebView APK
-        run: bash scripts/packaging/package-android.sh "${{ inputs.version }}" "${{ inputs.buildProfile }}"
+
+      - name: Préparer keystore (signature release optionnelle)
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > /tmp/gen3ia-release.jks
+          echo "GEN3IA_KEYSTORE_PATH=/tmp/gen3ia-release.jks" >> "$GITHUB_ENV"
+          echo "GEN3IA_KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "GEN3IA_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> "$GITHUB_ENV"
+          echo "GEN3IA_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+
+      - name: Package APK/AAB (Gradle réel)
+        run: |
+          npm install --no-audit --no-fund esbuild --no-save
+          bash scripts/packaging/package-android.sh "${{ inputs.version }}" "${{ inputs.buildProfile }}"
+
+      - name: Lister les artefacts produits
+        run: ls -la dist/ && cat dist/SHA256SUMS 2>/dev/null || true
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

@@ -40,6 +40,16 @@ android {
     release { minifyEnabled false }
   }
 }
+def ksPath = System.getenv('GEN3IA_KEYSTORE_PATH')
+def ksPass = System.getenv('GEN3IA_KEYSTORE_PASSWORD')
+def kAlias = System.getenv('GEN3IA_KEY_ALIAS')
+def kPass  = System.getenv('GEN3IA_KEY_PASSWORD')
+if (ksPath && file(ksPath).exists()) {
+  android.signingConfigs {
+    release { storeFile file(ksPath); storePassword ksPass; keyAlias kAlias; keyPassword kPass }
+  }
+  android.buildTypes.release.signingConfig android.signingConfigs.release
+}
 dependencies { implementation 'androidx.appcompat:appcompat:1.7.0' }
 EOF
 cat > "$WORK/app/src/main/AndroidManifest.xml" <<'EOF'
@@ -98,15 +108,32 @@ if [ ! -f "$WORK/app/src/main/assets/game.html" ]; then
   " || { echo "[android] ERREUR: esbuild/scene-export.json indisponible — placez-vous à la racine du projet GEN3IA" >&2; exit 1; }
 fi
 
-# 3. build gradle
-echo "[android] build Gradle assemble$([ "$PROFILE" = "debug" ] && echo Debug || echo Release)…"
+# 3. build gradle — cibles selon le profil
 cd "$WORK"
-gradle assemble$([ "$PROFILE" = "debug" ] && echo Debug || echo Release) --no-daemon -q \
-  || ./gradlew assemble$([ "$PROFILE" = "debug" ] && echo Debug || echo Release) --no-daemon -q
+run_gradle() { gradle "$@" --no-daemon -q || ./gradlew "$@" --no-daemon -q; }
+case "$PROFILE" in
+  debug)
+    echo "[android] build assembleDebug…"; run_gradle assembleDebug ;;
+  release)
+    echo "[android] build assembleRelease…"; run_gradle assembleRelease ;;
+  all)
+    echo "[android] build assembleDebug + assembleRelease + bundleRelease (AAB)…"
+    run_gradle assembleDebug assembleRelease bundleRelease ;;
+  *)
+    echo "[android] ERREUR: profil inconnu '$PROFILE' (debug|release|all)" >&2; exit 1 ;;
+esac
 
-# 4. copie de l'APK
-APK=$(find "$WORK/app/build/outputs/apk" -name "*.apk" | head -1)
-if [ -z "$APK" ]; then echo "[android] ERREUR: aucun APK produit" >&2; exit 1; fi
-cp "$APK" "$DIST/gen3ia-android-$VERSION-$PROFILE.apk"
-sha256sum "$DIST/gen3ia-android-$VERSION-$PROFILE.apk" > "$DIST/SHA256SUMS"
-echo "[android] OK → $DIST/gen3ia-android-$VERSION-$PROFILE.apk"
+# 4. copie des artefacts réellement produits
+COPIED=0
+for apk in $(find "$WORK/app/build/outputs/apk" -name "*.apk" 2>/dev/null); do
+  BASE=$(echo "$apk" | grep -o -E "(debug|release)" | head -1)
+  cp "$apk" "$DIST/gen3ia-android-$VERSION-$BASE.apk"; COPIED=$((COPIED+1))
+  echo "[android] APK: gen3ia-android-$VERSION-$BASE.apk ($(du -h "$apk" | cut -f1))"
+done
+for aab in $(find "$WORK/app/build/outputs/bundle" -name "*.aab" 2>/dev/null); do
+  cp "$aab" "$DIST/gen3ia-android-$VERSION-release.aab"; COPIED=$((COPIED+1))
+  echo "[android] AAB: gen3ia-android-$VERSION-release.aab ($(du -h "$aab" | cut -f1))"
+done
+if [ "$COPIED" -eq 0 ]; then echo "[android] ERREUR: aucun APK/AAB produit" >&2; exit 1; fi
+cd "$DIST" && sha256sum gen3ia-android-* > SHA256SUMS
+echo "[android] OK → $COPIED artefact(s) dans $DIST"

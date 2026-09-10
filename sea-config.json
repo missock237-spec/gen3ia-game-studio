@@ -1,5 +1,5 @@
 {
-  "main": "gen3ia-server.cjs",
+  "main": "dist/gen3ia-server.cjs",
   "output": "dist/sea-prep.blob",
   "disableExperimentalSEAWarning": true,
   "useSnapshot": false,

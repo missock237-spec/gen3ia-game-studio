@@ -133,12 +133,16 @@ export async function runLocalServerBuild(ctx: BuildContext, scene: unknown): Pr
     dependencies: { 'socket.io': '^4.8.3' },
     engines: { node: '>=20' },
   }, null, 2)
-  const readme = `# ${ctx.projectName} — Serveur dédié GEN3IA\n\nVersion ${ctx.version}\n\n## Démarrage\n\n\`\`\`bash\nnpm install\nnode server.js     # socket.io sur :3003, stats sur :3103\n\`\`\`\n\nLe serveur lit world.json (scène + config autoritaire) présent à côté de server.js.\n`
+  const readme = `# ${ctx.projectName} — Serveur dédié GEN3IA\n\nVersion ${ctx.version}\n\n## Démarrage\n\n\`\`\`bash\nnpm install\n./start.sh          # socket.io sur :3003, stats/health sur :3103\n# ou : node server.js\n\`\`\`\n\n## Health check\n\n\`\`\`bash\ncurl http://localhost:3103/stats   # tick rate, joueurs, mémoire\n\`\`\`\n\n## Docker\n\n\`\`\`bash\ndocker build -t ${ctx.projectName.toLowerCase().replace(/[^a-z0-9-]/g, '-')}-server .\ndocker run -p 3003:3003 -p 3103:3103 ${ctx.projectName.toLowerCase().replace(/[^a-z0-9-]/g, '-')}-server\n\`\`\`\n\nLe serveur lit world.json (scène + config autoritaire) présent à côté de server.js.\n`
+  const startSh = `#!/usr/bin/env bash\n# Lancement serveur dédié GEN3IA (${ctx.projectName} v${ctx.version})\nset -euo pipefail\ncd "\$(dirname "\$0")"\nif [ ! -d node_modules ]; then\n  echo "[start.sh] Installation des dépendances…"\n  npm install --omit=dev --no-audit --no-fund\nfi\necho "[start.sh] Démarrage du serveur (socket.io :3003, stats :3103)…"\nexec node server.js\n`
+  const dockerfile = `FROM node:20-alpine\nWORKDIR /app\nCOPY package.json ./\nRUN npm install --omit=dev --no-audit --no-fund\nCOPY server.js gen3ia-server.js world.json ./\nEXPOSE 3003 3103\nHEALTHCHECK --interval=30s --timeout=5s --retries=3 \\\n  CMD wget -qO- http://localhost:3103/stats > /dev/null 2>&1 || exit 1\nCMD ["node", "server.js"]\n`
   const zip = await zipToBuffer([
     { name: 'server.js', data: Buffer.from(`#!/usr/bin/env node\n// Lanceur GEN3IA — le bundle charge world.json depuis son répertoire.\nrequire('./gen3ia-server.js');\n`, 'utf8') },
     { name: 'gen3ia-server.js', data: Buffer.from(`${serverJs}\n`, 'utf8') },
     { name: 'world.json', data: Buffer.from(worldJson, 'utf8') },
     { name: 'package.json', data: Buffer.from(pkg, 'utf8') },
+    { name: 'start.sh', data: Buffer.from(startSh, 'utf8') },
+    { name: 'Dockerfile', data: Buffer.from(dockerfile, 'utf8') },
     { name: 'README.md', data: Buffer.from(readme, 'utf8') },
   ])
   await ctx.log('info', `Package serveur: ${Math.round(zip.length / 1024)} KB (zip)`)
