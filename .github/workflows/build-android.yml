@@ -23,13 +23,22 @@ jobs:
       - uses: android-actions/setup-android@v3
 
       - name: Préparer keystore (signature release optionnelle)
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          GEN3IA_KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          GEN3IA_KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          GEN3IA_K_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          GEN3IA_K_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > /tmp/gen3ia-release.jks
-          echo "GEN3IA_KEYSTORE_PATH=/tmp/gen3ia-release.jks" >> "$GITHUB_ENV"
-          echo "GEN3IA_KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
-          echo "GEN3IA_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> "$GITHUB_ENV"
-          echo "GEN3IA_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+          if [ -n "$GEN3IA_KS_B64" ]; then
+            echo "$GEN3IA_KS_B64" | base64 -d > /tmp/gen3ia-release.jks
+            echo "GEN3IA_KEYSTORE_PATH=/tmp/gen3ia-release.jks" >> "$GITHUB_ENV"
+            echo "GEN3IA_KEYSTORE_PASSWORD=$GEN3IA_KS_PASS" >> "$GITHUB_ENV"
+            echo "GEN3IA_KEY_ALIAS=$GEN3IA_K_ALIAS" >> "$GITHUB_ENV"
+            echo "GEN3IA_KEY_PASSWORD=$GEN3IA_K_PASS" >> "$GITHUB_ENV"
+            echo "keystore de signature configuré"
+          else
+            echo "Aucun secret ANDROID_KEYSTORE_BASE64 — release non signée"
+          fi
 
       - name: Package APK/AAB (Gradle réel)
         run: |
