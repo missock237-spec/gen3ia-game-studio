@@ -4,6 +4,9 @@ const nextConfig: NextConfig = {
   output: "standalone",
   // Aucun masque d'erreur TypeScript : le typecheck strict doit passer.
   reactStrictMode: false,
+  // socket.io via /api/mp : le XHR d'engine.io ne suit PAS les redirections
+  // 308 — on route /api/mp/ directement (catch-all optionnel) sans redirect.
+  skipTrailingSlashRedirect: true,
   // distDir surchargeable (validation de build prod isolée sans perturber
   // le serveur de développement) : NEXT_DIST_DIR=.next-prod
   ...(process.env.NEXT_DIST_DIR ? { distDir: process.env.NEXT_DIST_DIR } : {}),

@@ -50,7 +50,7 @@ async function runTier(n: number): Promise<void> {
   for (let i = 0; i < n; i += BATCH) {
     const batch = Array.from({ length: Math.min(BATCH, n - i) }, (_, k) => i + k)
     await Promise.allSettled(batch.map((idx) => new Promise<void>((resolve) => {
-      const sock = io(URL, { transports: ['websocket'], timeout: 15_000 })
+      const sock = io(URL, { path: '/mp/', transports: ['websocket'], timeout: 15_000 })
       const bot: Bot = { sock, id: '', snapshots: 0, latencies: [] }
       const to = setTimeout(() => { connectErrors++; resolve() }, 15_000)
       sock.on('connect', () => {

@@ -17,7 +17,7 @@ async function main() {
   let errors = 0
 
   await Promise.allSettled(Array.from({ length: N }, (_, i) => new Promise<void>((resolve) => {
-    const sock = io(URL, { transports: ['websocket'] })
+    const sock = io(URL, { path: '/mp/', transports: ['websocket'] })
     const c: Client = { sock, id: '', snapshots: 0 }
     const to = setTimeout(() => { errors++; resolve() }, 15_000)
     sock.on('connect', () => {

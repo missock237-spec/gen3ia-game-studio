@@ -7,6 +7,7 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import type { SceneDoc } from './scene'
 import type { EntityData } from './types'
 import { buildEntityObject, type AssetResolver, type BuiltObject } from './object-build'
+import { CullingManager } from './culling'
 
 export type CameraMode = 'orbit' | 'fps'
 export type TransformTool = 'translate' | 'rotate' | 'scale'
@@ -36,6 +37,7 @@ export class EngineRenderer {
   private canvas: HTMLCanvasElement
   private doc: SceneDoc | null = null
   private objectMap = new Map<string, { built: BuiltObject; entity: EntityData }>()
+  private culling = new CullingManager()
   private resolve: AssetResolver = () => undefined
   private raf = 0
   private clock = new THREE.Clock()
@@ -166,6 +168,7 @@ export class EngineRenderer {
             if (this.disposed) { return }
             this.objectMap.set(entity.id, { built, entity })
             this.scene.add(built.root)
+            this.culling.register(entity.id, built.root)
             this.pendingBuilds.delete(entity.id)
             this.applyEntityState(entity, built)
           })
@@ -184,6 +187,7 @@ export class EngineRenderer {
       if (!seen.has(id)) {
         this.scene.remove(rec.built.root)
         this.disposeObject(rec.built.root)
+        this.culling.unregister(id)
         this.objectMap.delete(id)
         const bh = this.selectionBoxes.get(id)
         if (bh) { this.scene.remove(bh); this.selectionBoxes.delete(id) }
@@ -218,6 +222,7 @@ export class EngineRenderer {
       }
     }
     root.visible = entity.visible
+    root.userData.entityVisible = entity.visible
     root.userData.entityId = entity.id
   }
 
@@ -412,6 +417,10 @@ export class EngineRenderer {
       for (const rec of this.objectMap.values()) {
         rec.built.update?.(this.running ? dt : dt, t)
       }
+      // culling (frustum + distance + LOD) — PLAY actif ou grandes scènes
+      if (this.running || this.objectMap.size > 40) {
+        this.culling.update(this.camera, this.camera.position, t)
+      }
       for (const bh of this.selectionBoxes.values()) bh.update()
       this.renderer.render(this.scene, this.camera)
       this.collectStats(dt)
@@ -444,6 +453,14 @@ export class EngineRenderer {
   markDirty() { this.applyQuality() }
   gridVisible(v: boolean) { this.grid.visible = v; this.axes.visible = v }
 
+  /** Stats de culling (Phase 15) — exposées au profiler. */
+  getCullingStats() { return this.culling.getStats() }
+
+  /** Configuration culling (maxDistance 0 = infini, LOD on/off). */
+  setCullingConfig(cfg: { maxDistance?: number; lodEnabled?: boolean; lodDistances?: [number, number] }) {
+    this.culling.setConfig(cfg)
+  }
+
   dispose() {
     this.disposed = true
     cancelAnimationFrame(this.raf)
@@ -454,6 +471,7 @@ export class EngineRenderer {
     this.orbit.dispose()
     for (const rec of this.objectMap.values()) this.disposeObject(rec.built.root)
     this.objectMap.clear()
+    this.culling.clear()
     this.renderer.dispose()
   }
 }

@@ -214,7 +214,7 @@ const statsServer = createServer((req, res) => {
 statsServer.listen(STATS_PORT, () => console.log(`stats server on :${STATS_PORT}`))
 
 const io = new Server(httpServer, {
-  path: '/',
+  path: '/mp/', // route dédiée : compatible gateway (XTransformPort) et déploiement direct
   cors: { origin: '*', methods: ['GET', 'POST'] },
   pingTimeout: 20_000,
   pingInterval: 10_000,

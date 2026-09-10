@@ -6,7 +6,7 @@ const URL = 'http://localhost:3003'
 const PROJECT = 'cmtvxrvjn000dqdu8soahpicn'
 
 function makeClient(name: string) {
-  const s = io(URL, { transports: ['websocket'] })
+  const s = io(URL, { path: '/mp/', transports: ['websocket'] })
   return new Promise<any>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`${name}: timeout join`)), 8000)
     s.on('connect', () => {
@@ -46,7 +46,7 @@ async function main() {
   const tokenB = b.data.sessionToken
   b.socket.disconnect()
   await new Promise(r => setTimeout(r, 300))
-  const b2 = io(URL, { transports: ['websocket'] })
+  const b2 = io(URL, { path: '/mp/', transports: ['websocket'] })
   const reconnected = await new Promise<any>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('timeout reconnect')), 8000)
     b2.on('connect', () => b2.emit('join', { projectId: PROJECT, zone: 'default', name: 'Bob', sessionToken: tokenB }))

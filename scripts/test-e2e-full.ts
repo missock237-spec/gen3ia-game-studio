@@ -73,7 +73,16 @@ async function main() {
 
   // 1. REGISTER
   console.log('\n▶ 1. REGISTER')
-  let r = await api('POST', '/api/auth/register', { email, name: 'E2E Tester', password })
+  let r = { status: 0, json: null as unknown, setCookie: undefined as string | undefined }
+  for (let attempt = 0; attempt < 4; attempt++) {
+    r = await api('POST', '/api/auth/register', { email, name: 'E2E Tester', password })
+    if (r.status === 200 || r.status === 201) break
+    const retry = Number(String((r.json as { error?: { message?: string } })?.error?.message ?? '').match(/(\d+)/)?.[1] ?? 0)
+    if (r.status === 429 && retry > 0 && retry < 70) {
+      console.log(`  ⏳ rate-limit IP, attente ${retry + 2}s…`)
+      await new Promise((res) => setTimeout(res, (retry + 2) * 1000))
+    } else break
+  }
   ok(r.status === 200 || r.status === 201, `register ${email} → ${r.status}`, r.json)
   ok(Boolean(cookie), 'cookie de session émis')
 

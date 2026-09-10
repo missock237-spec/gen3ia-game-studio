@@ -50,7 +50,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     const mime = file.type || 'application/octet-stream'
     const kind = assetKindFromMime(mime, file.name)
 
-    // basic magic-byte validation for images (detect corrupted files)
+    // magic-byte validation for images — MISMATCH REJETÉ (anti content-type spoofing)
     let corrupted = false
     if (mime.startsWith('image/')) {
       const isPng = buffer.length > 8 && buffer[0] === 0x89 && buffer[1] === 0x50
@@ -61,6 +61,16 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       const svg = ext === 'svg' && buffer.slice(0, 100).toString().includes('<svg')
       if (!svg && !['ktx2', 'hdr'].includes(ext ?? '')) {
         corrupted = !(isPng || isJpg || isGif || isWebp)
+        if (corrupted) {
+          return apiError(415, 'UNSUPPORTED_MEDIA', 'Fichier rejeté : type image déclaré mais magic bytes non reconnus (PNG/JPG/GIF/WEBP attendu)')
+        }
+      }
+      // SVG : jamais de script embarqué (anti-XSS) — rejet strict
+      if (svg) {
+        const head = buffer.slice(0, 4096).toString().toLowerCase()
+        if (head.includes('<script') || head.includes('onload=') || head.includes('onclick=') || head.includes('javascript:')) {
+          return apiError(415, 'UNSUPPORTED_MEDIA', 'SVG rejeté : script ou handler d\'événement détecté')
+        }
       }
     }
 

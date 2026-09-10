@@ -5,6 +5,7 @@ import { requireUser } from '@/lib/auth'
 import { handleApiError } from '@/lib/api-utils'
 
 const startedAt = Date.now()
+const multiplayerStatsUrl = process.env.GAME_SERVER_STATS_URL ?? 'http://localhost:3103/stats'
 
 export async function GET() {
   try {
@@ -42,6 +43,34 @@ export async function GET() {
       db.sceneChunk.aggregate({ _count: true, _sum: { sizeBytes: true } }),
     ])
     const mem = process.memoryUsage()
+    // CPU réel : temps CPU consommé depuis le démarrage / temps écoulé
+    const cpu = process.cpuUsage()
+    const uptimeSec = Math.floor((Date.now() - startedAt) / 1000)
+    const cpuPct = uptimeSec > 0
+      ? Math.round(((cpu.user + cpu.system) / 1000 / uptimeSec) * 100)
+      : 0
+    // game-server réel : stats remontées si joignable (jamais simulées)
+    let multiplayer: {
+      online: boolean; players?: number; realTickHz?: number
+      rooms?: number; memBytes?: number; endpoint: string
+    } = { online: false, endpoint: multiplayerStatsUrl }
+    try {
+      const ctrl = new AbortController()
+      const t = setTimeout(() => ctrl.abort(), 1500)
+      const gs = await fetch(multiplayerStatsUrl, { signal: ctrl.signal, cache: 'no-store' })
+      clearTimeout(t)
+      if (gs.ok) {
+        const s = await gs.json() as { totalPlayers?: number; realTickHz?: number; rooms?: unknown[]; mem?: number }
+        multiplayer = {
+          online: true,
+          players: s.totalPlayers,
+          realTickHz: s.realTickHz,
+          rooms: Array.isArray(s.rooms) ? s.rooms.length : 0,
+          memBytes: s.mem,
+          endpoint: multiplayerStatsUrl,
+        }
+      }
+    } catch { /* game-server indisponible — signalé honnêtement */ }
     return NextResponse.json({
       scope: 'admin',
       users, projects,
@@ -56,7 +85,8 @@ export async function GET() {
       },
       audit24h: audits,
       world: { chunks: chunks._count, chunkBytes: chunks._sum.sizeBytes ?? 0 },
-      process: { rssBytes: mem.rss, heapUsedBytes: mem.heapUsed, uptimeSec: Math.floor((Date.now() - startedAt) / 1000) },
+      multiplayer,
+      process: { rssBytes: mem.rss, heapUsedBytes: mem.heapUsed, cpuPercent: cpuPct, uptimeSec },
     })
   } catch (e) {
     return handleApiError(e)

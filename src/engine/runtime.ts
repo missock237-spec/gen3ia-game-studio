@@ -67,6 +67,12 @@ export class GameRuntime {
   private stepOnce = false
   private listeners = new Set<() => void>()
   private collisionForward = new Map<string, Set<string>>() // entityId -> listener script entityIds
+  private despawned = new Set<string>()
+  private frameCount = 0
+  /** bridge réseau injecté par l'éditeur (session multijoueur) — optionnel */
+  networkBridge: { send(event: string, data: unknown): void; on(event: string, cb: (d: unknown) => void): void; connected: boolean } | null = null
+  /** bridge UI injecté par l'éditeur (notifications) — optionnel */
+  uiBridge: { notify(message: string, level?: 'info' | 'warn' | 'error'): void } | null = null
 
   constructor(renderer: EngineRenderer, doc: SceneDoc, deps: RuntimeDeps) {
     this.renderer = renderer
@@ -185,6 +191,7 @@ export class GameRuntime {
     this.physics = null
     this.scripts.clear()
     this.entitiesRt.clear()
+    this.despawned.clear()
     for (const [, rec] of this.renderer.getObjects()) {
       // restore editor transform from doc
       const e = rec.entity
@@ -229,6 +236,7 @@ export class GameRuntime {
       const t0 = performance.now()
       while (this.accumulator >= fixed && steps < 5) {
         this.simulate(fixed)
+        this.frameCount++
         this.accumulator -= fixed
         steps++
       }
@@ -442,6 +450,7 @@ export class GameRuntime {
     }
   }
   private buildCtx(entityId: string, dt = 0): ScriptCtx {
+    const isNetworkConnected = () => Boolean(this.networkBridge?.connected)
     const rec = this.renderer.getObjects().get(entityId)
     const obj = rec?.built.root
     const entity = rec?.entity
@@ -484,8 +493,44 @@ export class GameRuntime {
         find: (nameOrTag) => this.findEntity(nameOrTag),
         log: (level, msg) => this.deps.log(level, msg),
         on: () => {},
-        spawn: () => {},
-        destroy: () => {},
+        spawn: (entityId: string) => this.sceneSpawn(entityId),
+        destroy: (entityId: string) => this.sceneDestroy(entityId),
+      },
+      scene: {
+        find: (nameOrTag) => this.findEntity(nameOrTag),
+        spawn: (entityId: string) => this.sceneSpawn(entityId),
+        destroy: (entityId: string) => this.sceneDestroy(entityId),
+        count: () => this.entitiesRt.size,
+      },
+      time: {
+        now: this.time,
+        deltaTime: dt,
+        frame: this.frameCount,
+      },
+      audio: {
+        play: (entityId: string, volume?: number) => {
+          if (volume !== undefined) {
+            const rt = this.entitiesRt.get(entityId)
+            if (rt?.audio) rt.audio.volume = Math.min(1, Math.max(0, volume))
+          }
+          this.playAudio(entityId)
+        },
+      },
+      network: {
+        send: (event: string, data: unknown) => {
+          if (this.networkBridge?.connected) this.networkBridge.send(`script:${event}`, data)
+          else this.deps.log('warn', `ctx.network.send ignoré — aucune session multijoueur (${event})`)
+        },
+        on: (event: string, cb: (data: unknown) => void) => {
+          if (this.networkBridge?.connected) this.networkBridge.on(`script:${event}`, cb)
+        },
+        get connected() { return isNetworkConnected() },
+      },
+      ui: {
+        notify: (message: string, level: 'info' | 'warn' | 'error' = 'info') => {
+          if (this.uiBridge) this.uiBridge.notify(String(message).slice(0, 200), level)
+          this.deps.log(level, `[ui] ${String(message).slice(0, 200)}`)
+        },
       },
       // Alias pratique : ctx.log('message') ou ctx.log('warn', 'message')
       log: (levelOrMsg: string, msg?: string) => {
@@ -524,6 +569,41 @@ export class GameRuntime {
       if (rt.entity.name === nameOrTag || rt.entity.tags.includes(nameOrTag)) return id
     }
     return null
+  }
+
+  // ───────────────── ctx.scene — despawn/respawn réels ─────────────────
+  /** Désactive une entité au runtime : physique retirée, objet caché,
+   *  scripts/updates suspendus. La scène persistée n'est PAS modifiée. */
+  private sceneDestroy(entityId: string) {
+    const rt = this.entitiesRt.get(entityId)
+    if (!rt) { this.deps.log('warn', `scene.destroy: entité inconnue ou déjà détruite (${entityId})`); return }
+    this.physics?.removeBody(entityId)
+    const rec = this.renderer.getObjects().get(entityId)
+    if (rec) {
+      rec.built.root.visible = false
+      rec.built.root.userData.entityVisible = false
+    }
+    this.entitiesRt.delete(entityId)
+    this.despawned.add(entityId)
+  }
+
+  /** Réactive une entité détruite via ctx.scene.destroy (respawn réel). */
+  private sceneSpawn(entityId: string) {
+    const rec = this.renderer.getObjects().get(entityId)
+    const despawnedRt = this.despawned.has(entityId)
+    if (!rec || (!despawnedRt && this.entitiesRt.has(entityId))) {
+      this.deps.log('warn', `scene.spawn: entité non respawnable (${entityId})`)
+      return
+    }
+    const e = rec.entity
+    rec.built.root.visible = e.visible
+    rec.built.root.userData.entityVisible = e.visible
+    const rt: EntityRuntime = { entity: e, errors: 0 }
+    if (e.components.rigidBody && e.components.collider) {
+      this.physics?.addBody(e, rec.built.root)
+    }
+    this.entitiesRt.set(entityId, rt)
+    this.despawned.delete(entityId)
   }
 
   // ───────────────── audio (real WebAudio) ─────────────────

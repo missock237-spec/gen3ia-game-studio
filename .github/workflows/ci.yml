@@ -1,0 +1,87 @@
+# GEN3IA — CI principale : install → lint → typecheck → prisma → tests
+# unitaires → build production → E2E complet (register→…→artifact) + sécurité.
+# Toutes les étapes doivent être vertes ; aucun skip, aucun masque.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: latest }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - name: Install
+        run: |
+          bun install --frozen-lockfile 2>/dev/null || bun install
+          npx prisma generate
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Typecheck (strict, sans masque)
+        run: npx tsc --noEmit
+
+      - name: Prisma validate
+        run: npx prisma validate
+
+      - name: Unit tests
+        run: bun test ./tests/
+
+      - name: Build production
+        env:
+          DATABASE_URL: 'file:./db/ci.db'
+        run: |
+          npm run build
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: latest }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - name: Install
+        run: |
+          bun install --frozen-lockfile 2>/dev/null || bun install
+          npx prisma generate
+
+      - name: Build + start application (standalone)
+        env:
+          DATABASE_URL: 'file:./db/e2e.db'
+        run: |
+          npx prisma db push --skip-generate
+          npm run build
+          NODE_ENV=production PORT=3000 bun .next/standalone/server.js &
+          echo $! > app.pid
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3000/api/health && break
+            sleep 2
+          done
+          curl -sf http://localhost:3000/api/health || { echo "app non démarrée"; exit 1; }
+
+      - name: Start game-server
+        run: |
+          bun mini-services/game-server/index.ts &
+          echo $! > gs.pid
+          sleep 3
+          curl -sf http://localhost:3103/stats || { echo "game-server non démarré"; exit 1; }
+
+      - name: E2E complet (register → build → artifact)
+        run: bun scripts/test-e2e-full.ts
+
+      - name: Multiplayer E2E (2 joueurs, anti-cheat, reconnexion)
+        run: bun scripts/test-multiplayer.ts
+
+      - name: Tests sécurité
+        run: bun scripts/test-security.ts

@@ -25,9 +25,10 @@ interface ChatLine { from: string; color: string; text: string; at: number }
 
 export default function MultiplayerPanel() {
   const projectId = useEditor((s) => s.projectId)
+  const userName = useEditor((s) => s.user?.name ?? '')
   const [connected, setConnected] = useState(false)
   const [joined, setJoined] = useState(false)
-  const [name, setName] = useState('')
+  const [name, setName] = useState(userName)
   const [players, setPlayers] = useState<Array<{ id: string; name: string; color: string }>>([])
   const [chat, setChat] = useState<ChatLine[]>([])
   const [chatInput, setChatInput] = useState('')
@@ -55,8 +56,12 @@ export default function MultiplayerPanel() {
 
   const join = () => {
     if (socketRef.current) return
-    const socket = io('/?XTransformPort=3003', {
-      transports: ['websocket', 'polling'],
+    // Transport polling via /api/mp (proxy Next.js → game-server :3003) :
+    // fonctionne derrière toute passerelle ; en déploiement direct, le client
+    // peut joindre le game-server nativement (websocket + polling).
+    const socket = io('/', {
+      path: '/api/mp', // proxy Next.js → game-server :3003 (transport polling)
+      transports: ['polling'],
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 1500,
@@ -197,7 +202,7 @@ export default function MultiplayerPanel() {
       {!joined ? (
         <div className="space-y-2">
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Votre pseudo" className="h-8" />
-          <Button size="sm" className="w-full" onClick={join} disabled={!connected && !name}>
+          <Button size="sm" className="w-full" onClick={join} disabled={!connected && !name && !userName}>
             <Play className="mr-1 h-3.5 w-3.5" /> Rejoindre zone A
           </Button>
           <p className="text-[10px] text-gray-500">

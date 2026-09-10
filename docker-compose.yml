@@ -1,8 +1,7 @@
-version: "3.9"
-
-# GEN3IA GAME STUDIO — stack production complète.
-#   docker compose up -d        → PostgreSQL + Redis + serveur de jeu
-#   npm install && npm run dev  → app Next.js (web + API)
+# GEN3IA GAME STUDIO — stack complète (PostgreSQL + Redis + game-server + app).
+#   docker compose up -d --profile full   → tout, y compris l'app Next.js
+#   docker compose up -d                  → infra + game-server (app lancée à part)
+# Testé là où Docker est disponible : docker compose up --wait
 services:
   postgres:
     image: postgres:16-alpine
@@ -35,7 +34,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Serveur multijoueur autoritaire (socket.io, tick 20 Hz).
+  # Serveur multijoueur autoritaire (socket.io, tick 20 Hz, SIGTERM propre).
   game-server:
     build:
       context: .
@@ -44,10 +43,40 @@ services:
       GAME_SERVER_PORT: 3003
       GAME_SERVER_STATS_PORT: 3103
       NODE_ENV: production
+      # persistence des positions (optionnel) :
+      # GAME_SERVER_PERSIST_FILE: /data/positions.json
     ports:
       - "3003:3003"
       - "3103:3103"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3103/stats"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 20s
+
+  # App Next.js (web + API) — profil "full"
+  app:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://gen3ia:${POSTGRES_PASSWORD:-gen3ia_dev_password}@postgres:5432/gen3ia}
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 20s
+    profiles: ["full"]
 
 volumes:
   pgdata:

@@ -40,6 +40,42 @@ export interface ScriptWorldAPI {
   destroy(entityId: string): void
 }
 
+/** ctx.scene — gestion d'entités au runtime (despawn/respawn réels). */
+export interface ScriptSceneAPI {
+  find(nameOrTag: string): string | null
+  spawn(entityId: string): void
+  destroy(entityId: string): void
+  /** nombre d'entités actives */
+  count(): number
+}
+
+/** ctx.time — temps de simulation (déterministe, contrôlé par le runtime). */
+export interface ScriptTimeAPI {
+  /** temps de simulation écoulé (s) */
+  now: number
+  deltaTime: number
+  /** numéro de frame */
+  frame: number
+}
+
+/** ctx.audio — lecture de sons via le moteur WebAudio du runtime. */
+export interface ScriptAudioAPI {
+  /** joue le son attaché à l'entité source (volume 0..1) ; no-op si absent */
+  play(entityId: string, volume?: number): void
+}
+
+/** ctx.network — événements multijoueur si une session est active. */
+export interface ScriptNetworkAPI {
+  send(event: string, data: unknown): void
+  on(event: string, cb: (data: unknown) => void): void
+  readonly connected: boolean
+}
+
+/** ctx.ui — notifications à l'écran (bridge fourni par l'hôte). */
+export interface ScriptUIAPI {
+  notify(message: string, level?: 'info' | 'warn' | 'error'): void
+}
+
 export interface ScriptInputAPI {
   key(code: string): boolean
   axis(): { x: number; z: number }
@@ -50,6 +86,11 @@ export interface ScriptCtx {
   entity: ScriptEntityAPI
   world: ScriptWorldAPI
   input: ScriptInputAPI
+  scene: ScriptSceneAPI
+  time: ScriptTimeAPI
+  audio: ScriptAudioAPI
+  network: ScriptNetworkAPI
+  ui: ScriptUIAPI
   /** Alias de ctx.world.log — accepte (msg) ou (level, msg). */
   log(levelOrMsg: 'info' | 'warn' | 'error' | string, msg?: string): void
   math: {
