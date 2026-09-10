@@ -150,13 +150,18 @@ async function boot() {
       setPosition: (x: number, y: number, z: number) => rt.obj.position.set(x, y, z),
       rotate: (x: number, y: number, z: number) => rt.obj.rotation.set(rt.obj.rotation.x + x, rt.obj.rotation.y + y, rt.obj.rotation.z + z),
       lookAt: (x: number, y: number, z: number) => rt.obj.lookAt(x, y, z),
-      body: rt.body ? { velocity: rt.body.velocity, applyImpulse: (x: number, y: number, z: number) => rt.body!.applyImpulse(new CANNON.Vec3(x, y, z), rt.body!.position), setVelocity: (x: number, y: number, z: number) => rt.body!.velocity.set(x, y, z) } : null,
+      body: rt.body ? { velocity: rt.body.velocity, quaternion: rt.body.quaternion, applyImpulse: (x: number, y: number, z: number) => rt.body!.applyImpulse(new CANNON.Vec3(x, y, z), rt.body!.position), setVelocity: (x: number, y: number, z: number) => rt.body!.velocity.set(x, y, z) } : null,
       grounded: false,
       health: rt.entity.components.health ? { max: rt.entity.components.health.max, current: rt.entity.components.health.current } : null,
       distanceTo: () => 0,
       find: (n: string) => rts.find((r) => r.entity.name === n || r.entity.tags.includes(n))?.entity.id ?? null,
     },
     world: { time: 0, deltaTime: 0, find: () => null, log: (l: string, m: string) => console[l](m), on: () => {}, spawn: () => {}, destroy: () => {} },
+    log: (levelOrMsg: string, msg?: string) => {
+      const level = (msg !== undefined && ['info', 'warn', 'error'].includes(levelOrMsg)) ? levelOrMsg as 'info' | 'warn' | 'error' : 'info'
+      const text = msg !== undefined ? msg : levelOrMsg
+      console[level](text)
+    },
     input: {
       key: (code: string) => keys.has(code),
       axis: () => {

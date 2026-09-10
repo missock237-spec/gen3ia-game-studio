@@ -7,6 +7,9 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: false,
+  // Esbuild est un outil serveur avec un binaire natif : ne doit JAMAIS
+  // être tracé/bundlé par Turbopack (sinon "invalid utf-8 sequence").
+  serverExternalPackages: ["esbuild"],
 };
 
 export default nextConfig;

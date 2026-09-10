@@ -16,6 +16,11 @@ export interface ScriptEntityAPI {
   lookAt(x: number, y: number, z: number): void
   body: {
     velocity: { x: number; y: number; z: number }
+    quaternion: {
+      x: number; y: number; z: number; w: number
+      set(x: number, y: number, z: number, w: number): void
+      normalize(): void
+    }
     applyImpulse(x: number, y: number, z: number): void
     setVelocity(x: number, y: number, z: number): void
   } | null
@@ -45,6 +50,8 @@ export interface ScriptCtx {
   entity: ScriptEntityAPI
   world: ScriptWorldAPI
   input: ScriptInputAPI
+  /** Alias de ctx.world.log — accepte (msg) ou (level, msg). */
+  log(levelOrMsg: 'info' | 'warn' | 'error' | string, msg?: string): void
   math: {
     clamp(v: number, min: number, max: number): number
     lerp(a: number, b: number, t: number): number

@@ -374,6 +374,14 @@ export class GameRuntime {
         body: body ? {
           get velocity() { return { x: body.velocity.x, y: body.velocity.y, z: body.velocity.z } },
           set velocity(v) { body.velocity.set(v.x, v.y, v.z) },
+          quaternion: {
+            get x() { return body.quaternion.x },
+            get y() { return body.quaternion.y },
+            get z() { return body.quaternion.z },
+            get w() { return body.quaternion.w },
+            set: (x, y, z, w) => body.quaternion.set(x, y, z, w),
+            normalize: () => body.quaternion.normalize(),
+          },
           applyImpulse: (x, y, z) => body.applyImpulse(new (body.position.constructor as new (x: number, y: number, z: number) => never)(x, y, z) as never, body.position),
           setVelocity: (x, y, z) => body.velocity.set(x, y, z),
         } : null,
@@ -393,6 +401,12 @@ export class GameRuntime {
         on: () => {},
         spawn: () => {},
         destroy: () => {},
+      },
+      // Alias pratique : ctx.log('message') ou ctx.log('warn', 'message')
+      log: (levelOrMsg: string, msg?: string) => {
+        const level = (msg !== undefined && ['info', 'warn', 'error'].includes(levelOrMsg)) ? levelOrMsg as 'info' | 'warn' | 'error' : 'info'
+        const text = msg !== undefined ? msg : levelOrMsg
+        this.deps.log(level, String(text))
       },
       input: {
         key: (code) => this.keys.has(code),

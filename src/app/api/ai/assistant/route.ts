@@ -78,6 +78,18 @@ export async function POST(req: NextRequest) {
       const start = cleaned.indexOf('{')
       const end = cleaned.lastIndexOf('}')
       parsed = JSON.parse(cleaned.slice(start, end + 1))
+      // Défense : certains modèles encapsulent tout le JSON dans "reply".
+      // Si aucune commande mais que "reply" est lui-même du JSON → re-parse.
+      if (
+        (!parsed.commands || (Array.isArray(parsed.commands) && parsed.commands.length === 0)) &&
+        typeof parsed.reply === 'string' &&
+        parsed.reply.trim().startsWith('{')
+      ) {
+        try {
+          const inner = JSON.parse(parsed.reply.replace(/```json|```/g, '').trim())
+          if (inner && Array.isArray(inner.commands)) parsed = inner
+        } catch { /* on garde le parse externe */ }
+      }
     } catch {
       return NextResponse.json({
         reply: result.text.slice(0, 2000),

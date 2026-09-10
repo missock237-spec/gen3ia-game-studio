@@ -52,3 +52,13 @@ prompt
 server.log
 # Skills directory
 /skills/
+# GEN3IA GAME STUDIO — artefacts locaux
+/db
+/storage
+/download
+/gen3ia-analysis
+/.zscripts
+/Caddyfile
+/agent-ctx
+prisma/dev.db
+*.db-journal
