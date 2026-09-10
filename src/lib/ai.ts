@@ -7,9 +7,14 @@ import { db } from '@/lib/db'
 
 export type AITask = 'chat' | 'scene_command' | 'dialogue' | 'quest' | 'code' | 'classification'
 
+/** Contenu multimodal : texte simple ou parties texte+image (vision). */
+export type MessageContent =
+  | string
+  | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
-  content: string
+  content: MessageContent
 }
 
 export interface AICompletionOptions {
@@ -20,6 +25,20 @@ export interface AICompletionOptions {
   json?: boolean
   userId?: string
   projectId?: string
+}
+
+export interface AIEmbeddingOptions {
+  input: string
+  userId?: string
+  projectId?: string
+}
+
+export interface AIEmbeddingResult {
+  vector: number[]
+  provider: string
+  model: string
+  latencyMs: number
+  cached?: boolean
 }
 
 export interface AICompletionResult {
@@ -35,6 +54,7 @@ export interface AICompletionResult {
 
 // ───────────────── Cache réponse (tâches déterministes) ─────────────────
 const responseCache = new Map<string, { result: AICompletionResult; expiresAt: number }>()
+const embeddingCache = new Map<string, { result: AIEmbeddingResult; expiresAt: number }>()
 const CACHE_TTL_MS = 10 * 60 * 1000
 const CACHE_MAX = 200
 
@@ -111,6 +131,13 @@ interface AIProvider {
   name: string
   available(): boolean
   complete(opts: AICompletionOptions): Promise<AICompletionResult>
+  /** embeddings optionnels — les providers non supportants le signalent honnêtement */
+  embed?(opts: AIEmbeddingOptions): Promise<AIEmbeddingResult>
+}
+
+function contentToText(content: MessageContent): string {
+  if (typeof content === 'string') return content
+  return content.map((p) => (p.type === 'text' ? p.text : '[image]')).join('\n')
 }
 
 /** z-ai provider — works in this environment, no token needed. */
@@ -141,6 +168,10 @@ class ZaiProvider implements AIProvider {
       tokensOut: usage?.completion_tokens ?? 0,
     }
   }
+  async embed(_opts: AIEmbeddingOptions): Promise<AIEmbeddingResult> {
+    // le SDK z-ai n'expose pas de service d'embeddings — signalé honnêtement
+    throw new Error('Embeddings non supportés par le provider zai — configurez HF_TOKEN')
+  }
 }
 
 /** Hugging Face Inference Providers — active when HF_TOKEN is set. */
@@ -157,6 +188,24 @@ class HuggingFaceProvider implements AIProvider {
   }
   constructor(token: string) { this.token = token }
   available() { return Boolean(this.token) }
+  async embed(opts: AIEmbeddingOptions): Promise<AIEmbeddingResult> {
+    // Hugging Face feature-extraction — embeddings réels quand HF_TOKEN est configuré
+    const model = 'sentence-transformers/all-MiniLM-L6-v2'
+    const t0 = Date.now()
+    const res = await withTimeout(fetch(`https://router.huggingface.co/hf-inference/models/${model}/pipeline/feature-extraction`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inputs: opts.input }),
+    }), 30_000, 'huggingface embeddings')
+    if (!res.ok) throw new Error(`HF embeddings ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`)
+    const data = (await res.json()) as number[] | number[][]
+    // all-MiniLM renvoie [tokens][dim] — mean pooling en vecteur unique
+    const vector = Array.isArray(data) && Array.isArray(data[0])
+      ? (data as number[][]).reduce((acc, row) => row.map((v, i) => acc[i] + v / row.length), new Array((data as number[][])[0].length).fill(0) as number[])
+      : (data as number[])
+    return { vector, provider: this.name, model, latencyMs: Date.now() - t0 }
+  }
+
   async complete(opts: AICompletionOptions): Promise<AICompletionResult> {
     const model = this.modelsByTask[opts.task] ?? this.modelsByTask.chat
     const t0 = Date.now()
@@ -218,6 +267,32 @@ class AIProviderManager {
     return this.providers.map((p) => ({ name: p.name, available: p.available() }))
   }
 
+  /** embeddings avec cache + fallback entre providers supportants. */
+  async embed(opts: AIEmbeddingOptions): Promise<AIEmbeddingResult> {
+    const key = createHash('sha256').update(`emb:${opts.input}`).digest('hex').slice(0, 32)
+    const hit = embeddingCache.get(key)
+    if (hit && Date.now() <= hit.expiresAt) return { ...hit.result, cached: true }
+    if (hit) embeddingCache.delete(key)
+
+    const supporting = this.providers.filter((p) => p.available() && typeof p.embed === 'function')
+    if (supporting.length === 0) {
+      throw new Error('Aucun fournisseur d\'embeddings disponible — configurez HF_TOKEN')
+    }
+    let lastErr: unknown = null
+    for (const p of supporting) {
+      try {
+        const result = await p.embed!(opts)
+        embeddingCache.set(key, { result, expiresAt: Date.now() + CACHE_TTL_MS })
+        if (embeddingCache.size >= CACHE_MAX) {
+          const oldest = embeddingCache.keys().next().value
+          if (oldest) embeddingCache.delete(oldest)
+        }
+        return result
+      } catch (e) { lastErr = e }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error('Embeddings indisponibles')
+  }
+
   /** Route by task, honoring circuit breakers, cache and automatic fallback. */
   async complete(opts: AICompletionOptions): Promise<AICompletionResult> {
     // cache uniquement pour les appels quasi déterministes (température basse)
@@ -262,7 +337,7 @@ class AIProviderManager {
           task: opts.task,
           provider: result?.provider ?? 'none',
           model: result?.model ?? null,
-          prompt: opts.messages.map((m) => `${m.role}: ${m.content.slice(0, 500)}`).join('\n').slice(0, 4000),
+          prompt: opts.messages.map((m) => `${m.role}: ${contentToText(m.content).slice(0, 500)}`).join('\n').slice(0, 4000),
           response: result?.text?.slice(0, 8000) ?? null,
           tokensIn: result?.tokensIn ?? 0,
           tokensOut: result?.tokensOut ?? 0,

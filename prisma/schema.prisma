@@ -13,21 +13,21 @@ datasource db {
 // ─────────────────────────── AUTH & USERS ───────────────────────────
 
 model User {
-  id            String   @id @default(cuid())
-  email         String   @unique
-  name          String
-  passwordHash  String
-  role          String   @default("USER") // USER | ADMIN
-  avatarColor   String   @default("#22c55e")
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         String   @default("USER") // USER | ADMIN
+  avatarColor  String   @default("#22c55e")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  projects      Project[]
-  members       ProjectMember[]
-  sessions      Session[]
-  auditEvents   AuditEvent[]
-  aiRequests    AIRequest[]
-  builds        Build[]
+  projects    Project[]
+  members     ProjectMember[]
+  sessions    Session[]
+  auditEvents AuditEvent[]
+  aiRequests  AIRequest[]
+  builds      Build[]
 
   @@index([email])
 }
@@ -48,39 +48,40 @@ model Session {
 // ─────────────────────────── PROJECTS ───────────────────────────
 
 model Project {
-  id          String   @id @default(cuid())
+  id          String @id @default(cuid())
   name        String
-  description String   @default("")
+  description String @default("")
   ownerId     String
-  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  owner       User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
   // Configuration (JSON payloads validated by Zod on write)
-  sceneData    String   @default("{}") // serialized scene graph (entities/components)
-  gameConfig   String   @default("{}") // gameplay config
-  serverConfig String   @default("{}") // multiplayer/server config (maxPlayers, tickRate, region...)
-  aiConfig     String   @default("{}") // AI/LLM config
-  buildConfig  String   @default("{}") // build targets & profiles
-  worldConfig  String   @default("{}") // world streaming cells config
+  sceneData    String @default("{}") // serialized scene graph (entities/components)
+  gameConfig   String @default("{}") // gameplay config
+  serverConfig String @default("{}") // multiplayer/server config (maxPlayers, tickRate, region...)
+  aiConfig     String @default("{}") // AI/LLM config
+  buildConfig  String @default("{}") // build targets & profiles
+  worldConfig  String @default("{}") // world streaming cells config
 
   // Git integration
   githubRepo    String? // e.g. "owner/name"
   githubBranch  String  @default("main")
   lastCommitSha String?
 
-  autoSave    Boolean  @default(true)
-  isArchived  Boolean  @default(false)
+  autoSave   Boolean @default(true)
+  isArchived Boolean @default(false)
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  members     ProjectMember[]
-  scenes      Scene[]
-  assets      Asset[]
-  snapshots   Snapshot[]
-  builds      Build[]
-  scripts     ScriptFile[]
-  chunks      SceneChunk[]
-  factions    Faction[]
+  members   ProjectMember[]
+  scenes    Scene[]
+  assets    Asset[]
+  snapshots Snapshot[]
+  builds    Build[]
+  scripts   ScriptFile[]
+  chunks    SceneChunk[]
+  factions  Faction[]
+  npcs      NPC[]
 
   @@index([ownerId])
   @@index([updatedAt])
@@ -141,22 +142,22 @@ model Snapshot {
 // ─────────────────────────── ASSETS ───────────────────────────
 
 model Asset {
-  id          String   @id @default(cuid())
-  projectId   String
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  name        String
-  folder      String   @default("/") // virtual folder path
-  kind        String // model | texture | audio | video | script | shader | font | json | prefab | other
-  mimeType    String
-  size        Int // bytes
-  checksum    String // sha256
-  storageKey  String // key in storage adapter
-  provider    String   @default("local") // local | r2 | gcs
-  metadata    String   @default("{}")
-  version     Int      @default(1)
-  corrupted   Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         String   @id @default(cuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name       String
+  folder     String   @default("/") // virtual folder path
+  kind       String // model | texture | audio | video | script | shader | font | json | prefab | other
+  mimeType   String
+  size       Int // bytes
+  checksum   String // sha256
+  storageKey String // key in storage adapter
+  provider   String   @default("local") // local | r2 | gcs
+  metadata   String   @default("{}")
+  version    Int      @default(1)
+  corrupted  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   @@unique([projectId, folder, name])
   @@index([projectId, kind])
@@ -167,33 +168,33 @@ model Asset {
 // ─────────────────────────── BUILDS ───────────────────────────
 
 model Build {
-  id          String   @id @default(cuid())
-  projectId   String
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  target      String // web | android | windows | linux | dedicated-server | github
-  profile     String   @default("release") // debug | release
-  version     String   @default("1.0.0") // version sémantique saisie au lancement
-  provider    String   @default("local") // local | google-cloud-build | github-actions
-  status      String   @default("QUEUED") // QUEUED | PREPARING | BUILDING | TESTING | PACKAGING | UPLOADING | COMPLETED | FAILED | CANCELLED
-  progress    Int      @default(0) // 0..100
-  logs        String   @default("[]") // array of {t, level, msg}
-  artifactKey String?
-  artifactUrl String?
-  artifactSize Int?
-  attempt     Int      @default(0)
-  timeoutAt   DateTime? // deadline globale du build
-  cancelRequested Boolean @default(false)
-  commitSha   String?
-  workflowId  String? // GitHub run id ou Cloud Build operation id
-  externalUrl String? // URL du run/operation externe
-  error       String?
-  startedAt   DateTime?
-  completedAt DateTime?
-  createdAt   DateTime @default(now())
+  id              String    @id @default(cuid())
+  projectId       String
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  target          String // web | android | windows | linux | dedicated-server | github
+  profile         String    @default("release") // debug | release
+  version         String    @default("1.0.0") // version sémantique saisie au lancement
+  provider        String    @default("local") // local | google-cloud-build | github-actions
+  status          String    @default("QUEUED") // QUEUED | PREPARING | BUILDING | TESTING | PACKAGING | UPLOADING | COMPLETED | FAILED | CANCELLED
+  progress        Int       @default(0) // 0..100
+  logs            String    @default("[]") // array of {t, level, msg}
+  artifactKey     String?
+  artifactUrl     String?
+  artifactSize    Int?
+  attempt         Int       @default(0)
+  timeoutAt       DateTime? // deadline globale du build
+  cancelRequested Boolean   @default(false)
+  commitSha       String?
+  workflowId      String? // GitHub run id ou Cloud Build operation id
+  externalUrl     String? // URL du run/operation externe
+  error           String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
 
-  artifacts   BuildArtifact[]
+  artifacts BuildArtifact[]
 
   @@index([projectId, createdAt])
   @@index([status])
@@ -201,22 +202,22 @@ model Build {
 
 // Artifact de build versionné — gros binaires JAMAIS en base, seulement la référence.
 model BuildArtifact {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   projectId  String
   buildId    String
-  build      Build    @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  build      Build     @relation(fields: [buildId], references: [id], onDelete: Cascade)
   target     String
   version    String
-  kind       String   @default("primary") // primary | symbols | manifest
+  kind       String    @default("primary") // primary | symbols | manifest
   fileName   String
-  mimeType   String   @default("application/octet-stream")
+  mimeType   String    @default("application/octet-stream")
   size       Int
   checksum   String // sha256 du contenu
   storageKey String
-  provider   String   @default("local") // local | r2 | gcs
-  status     String   @default("READY") // READY | EXPIRED | DELETED
+  provider   String    @default("local") // local | r2 | gcs
+  status     String    @default("READY") // READY | EXPIRED | DELETED
   expiresAt  DateTime?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
 
   @@index([projectId, createdAt])
   @@index([buildId])
@@ -225,21 +226,21 @@ model BuildArtifact {
 // ─────────────────────────── AI ───────────────────────────
 
 model AIRequest {
-  id          String   @id @default(cuid())
-  userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  projectId   String?
-  task        String // chat | scene_command | dialogue | quest | code
-  provider    String   @default("zai") // zai | huggingface
-  model       String?
-  prompt      String
-  response    String?
-  tokensIn    Int      @default(0)
-  tokensOut   Int      @default(0)
-  latencyMs   Int      @default(0)
-  status      String   @default("OK") // OK | ERROR
-  error       String?
-  createdAt   DateTime @default(now())
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId String?
+  task      String // chat | scene_command | dialogue | quest | code
+  provider  String   @default("zai") // zai | huggingface
+  model     String?
+  prompt    String
+  response  String?
+  tokensIn  Int      @default(0)
+  tokensOut Int      @default(0)
+  latencyMs Int      @default(0)
+  status    String   @default("OK") // OK | ERROR
+  error     String?
+  createdAt DateTime @default(now())
 
   @@index([userId, createdAt])
   @@index([projectId])
@@ -248,14 +249,15 @@ model AIRequest {
 // ─────────────────────────── MULTIPLAYER ───────────────────────────
 
 model World {
-  id        String   @id @default(cuid())
-  projectId String
-  name      String   @default("world-0")
-  maxPlayers Int     @default(64)
-  tickRate  Int      @default(20)
-  createdAt DateTime @default(now())
+  id         String   @id @default(cuid())
+  projectId  String
+  name       String   @default("world-0")
+  maxPlayers Int      @default(64)
+  tickRate   Int      @default(20)
+  createdAt  DateTime @default(now())
 
-  zones Zone[]
+  zones   Zone[]
+  regions Region[]
 
   @@index([projectId])
 }
@@ -264,12 +266,15 @@ model Zone {
   id        String   @id @default(cuid())
   worldId   String
   world     World    @relation(fields: [worldId], references: [id], onDelete: Cascade)
+  regionId  String?
+  region    Region?  @relation(fields: [regionId], references: [id], onDelete: SetNull)
   name      String // "zone-A"...
   bounds    String   @default("{}") // {min:[x,y,z], max:[x,y,z]}
   serverId  String? // assigned game server
   createdAt DateTime @default(now())
 
   @@index([worldId])
+  @@index([regionId])
 }
 
 // ─────────────────────────── WORLD STREAMING ───────────────────────────
@@ -278,18 +283,18 @@ model Zone {
 // Les données de chunk (entités/terrain sérialisés) restent hors PostgreSQL
 // quand elles sont grosses : stockées via le Storage Adapter (storageKey).
 model SceneChunk {
-  id         String   @id @default(cuid())
-  projectId  String
-  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  cx         Int // coordonnée cellule X
-  cz         Int // coordonnée cellule Z
-  name       String   @default("")
-  data       String   @default("{}") // entités du chunk (JSON validé Zod)
-  terrain    String   @default("{}") // params heightmap {seed, octaves, amplitude...}
-  entityCount Int     @default(0)
-  sizeBytes  Int      @default(0)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  cx          Int // coordonnée cellule X
+  cz          Int // coordonnée cellule Z
+  name        String   @default("")
+  data        String   @default("{}") // entités du chunk (JSON validé Zod)
+  terrain     String   @default("{}") // params heightmap {seed, octaves, amplitude...}
+  entityCount Int      @default(0)
+  sizeBytes   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@unique([projectId, cx, cz])
   @@index([projectId])
@@ -306,6 +311,8 @@ model Faction {
   relations String   @default("{}")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  npcs NPC[]
 
   @@unique([projectId, name])
 }
@@ -324,4 +331,152 @@ model AuditEvent {
 
   @@index([createdAt])
   @@index([userId, createdAt])
+}
+
+// ─────────────────────────── MMO — REGIONS ───────────────────────────
+// World → Region → Zone : niveau intermédiaire pour le scaling horizontal.
+
+model Region {
+  id        String   @id @default(cuid())
+  worldId   String
+  world     World    @relation(fields: [worldId], references: [id], onDelete: Cascade)
+  name      String // "europe-west", "us-east"…
+  bounds    String   @default("{}") // {min:[x,y,z], max:[x,y,z]}
+  createdAt DateTime @default(now())
+
+  zones Zone[]
+
+  @@unique([worldId, name])
+  @@index([worldId])
+}
+
+// ─────────────────────────── NPC ───────────────────────────
+
+model NPC {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name        String
+  kind        String   @default("villager") // villager | guard | merchant | monster | quest_giver
+  factionId   String?
+  position    String   @default("{}") // {x,y,z}
+  personality String   @default("{}") // traits {bravery, greed, sociability…}
+  schedule    String   @default("[]") // [{time, activity, location}]
+  dialogue    String   @default("{}") // lignes/branches locales (LLM optionnel)
+  homePos     String   @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  memories NPCMemory[]
+  faction  Faction?    @relation(fields: [factionId], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, name])
+  @@index([projectId, kind])
+}
+
+model NPCMemory {
+  id         String    @id @default(cuid())
+  npcId      String
+  npc        NPC       @relation(fields: [npcId], references: [id], onDelete: Cascade)
+  kind       String // event | meeting | combat | trade | quest
+  subject    String // "player:abc123", "npc:def456", "event:raid"
+  sentiment  Int       @default(0) // -100..100
+  importance Int       @default(5) // 1..10 (poids de la mémoire)
+  summary    String
+  expiresAt  DateTime? // mémoire éphémère optionnelle
+  createdAt  DateTime  @default(now())
+
+  @@index([npcId, createdAt])
+  @@index([npcId, subject])
+}
+
+// ─────────────────────────── JOUEURS (runtime MMO) ───────────────────────────
+
+model Player {
+  id           String   @id @default(cuid())
+  projectId    String
+  worldId      String?
+  externalId   String // id côté game-server (uuid court)
+  displayName  String
+  lastZoneId   String?
+  lastPosition String   @default("{}")
+  lastSeenAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  inventory   PlayerInventory[]
+  progression PlayerProgression[]
+
+  @@unique([projectId, externalId])
+  @@index([projectId, lastSeenAt])
+}
+
+model PlayerInventory {
+  id       String @id @default(cuid())
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  itemId   String
+  quantity Int    @default(1)
+  metadata String @default("{}")
+
+  @@unique([playerId, itemId])
+}
+
+model PlayerProgression {
+  id        String   @id @default(cuid())
+  playerId  String
+  player    Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  key       String // xp, level, quest:abc, reputation:Garde…
+  value     String   @default("0")
+  updatedAt DateTime @updatedAt
+
+  @@unique([playerId, key])
+}
+
+// ─────────────────────────── SERVERS (flotte game servers) ───────────────────────────
+
+model Server {
+  id         String    @id @default(cuid())
+  name       String
+  endpoint   String // host:port socket.io
+  region     String    @default("eu-west")
+  status     String    @default("OFFLINE") // ONLINE | OFFLINE | DRAINING | MAINTENANCE
+  capacity   Int       @default(500) // capacité nominale (jamais interprétée comme testée)
+  loadPct    Int       @default(0) // % charge remontée par /stats
+  lastPingAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  sessions ServerSession[]
+
+  @@unique([name])
+  @@index([status])
+}
+
+model ServerSession {
+  id           String    @id @default(cuid())
+  serverId     String
+  server       Server    @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  playerId     String
+  sessionToken String
+  joinedAt     DateTime  @default(now())
+  leftAt       DateTime?
+
+  @@index([serverId, joinedAt])
+  @@index([playerId])
+}
+
+// ─────────────────────────── ASSET VERSIONING ───────────────────────────
+
+model AssetVersion {
+  id         String   @id @default(cuid())
+  assetId    String
+  version    Int
+  checksum   String
+  storageKey String
+  size       Int
+  createdAt  DateTime @default(now())
+
+  @@unique([assetId, version])
+  @@index([assetId])
 }

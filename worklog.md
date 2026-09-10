@@ -49,3 +49,27 @@ Work Log:
 Stage Summary:
 - tsc --noEmit : 0 erreur ; eslint : propre ; tests unitaires 8/8 ; E2E navigateur du panneau BUILD : 5 cibles affichées, FAILED android honnête affiché, COMPLETED web/server listés avec checksum.
 - 3 fichiers workflows + 1 template Cloud Build + 3 scripts de packaging commités pour les pipelines distants réels.
+
+---
+Task ID: 3
+Agent: Super Z (session principale)
+Task: Évolution 30 phases du dépôt gen3ia-game-studio (audit, validation, E2E, builds multi-cibles réels, MMO, IA, DB, sécurité, CI).
+
+Work Log:
+- PHASE 1-2 AUDIT+VALIDATION : npm install/prisma generate/lint/tsc/build OK ; suppression de typescript.ignoreBuildErrors (masque interdit) — tsc strict passe à 0 erreur ; distDir isolé (.next-prod) pour valider le build prod sans casser le serveur dev ; game-server redémarré ; tests unitaires étendus.
+- PHASE 3 E2E : scripts/test-e2e-full.ts — 20 étapes réelles (register→login→projet→scène→entité→transform→composants→save→snapshot→upload asset PNG→blob→assistant IA→validation Zod→approbation→PLAY→build web→artifact→download) : 43 assertions, 0 échec.
+- BUG FIX (P0) : assistant IA — JSON malformé du LLM (accolade manquante) → src/lib/json-repair.ts (réparation prouvable : déséquilibrage, virgules traînantes, troncature) + 6 tests unitaires ; E2E IA désormais vert.
+- BUG FIX (P0) : game-server — player.x jamais persisté dans une même cellule de grille (désync) → gridMove corrigé.
+- PHASE 4 : retry builds (POST /api/builds/[buildId]/retry) ; BuildContext.sceneData injecté aux providers distants ; tarball GCB embarque la vraie scène.
+- PHASE 5-9 WORKFLOWS (tous déclenchés via API GitHub + résultats vérifiés) : Build Web ✅, Dedicated Server ✅ (smoke test npm install→node→stats), Linux ✅ (package complet + smoke), Windows ✅ (SEA réel : socket.io bundlé, sea-config corrigé, signtool x64 avant postject, smoke test démarrage exe sur runner), Android ✅ (APK debug 240 Ko + APK release + AAB, AndroidManifest+classes.dex+game.html 735 Ko vérifiés dans l'APK ; signature release optionnelle via secrets).
+- Scripts packaging corrigés : export-web/export-server (fallback scène démo honnête), export-server (package complet : server.js, world.json, start.sh, Dockerfile, README), package-android (gradle.properties AndroidX, appcompat retiré, profil all, checksums), demo-scene.json validée Zod ajoutée.
+- PHASE 12 STORAGE : scripts/test-storage.ts — put/get/head/delete byte-to-byte, URLs signées HMAC (expiration+altération), path traversal, multipart réel 3×5 Mo via API (checksums cohérents), quota, dégradation propre sans R2 : 23 assertions 0 échec.
+- PHASE 13 MULTIPLAYER : scripts/load-multiplayer-tiers.ts — paliers 2/10/50/100/300 réels : tick 19.7-20 Hz, latence p95 1→18 ms, mémoire 59→143 Mo, CPU 6→25 %, 2853 snapshots/s à 300 joueurs, anti-spam actif (2230 rejets/30000 inputs). Aucune affirmation au-delà des paliers mesurés.
+- PHASE 14 MMO : régions (World→Region→Zone, config world.json), zone handoff (event zone:move avec état préservé), AOI par distance (interestRadius), TTL sessions 30 min, checkpoint positions (GAME_SERVER_PERSIST_FILE), stats étendues (regions, interestRadius).
+- PHASE 17-18 IA : AIProvider.embed() ajouté (HF feature-extraction réel + mean pooling, fallback multi-providers, cache) ; vision via messages multimodaux (MessageContent) ; ZaiProvider signale honnêtement l'absence d'embeddings.
+- PHASE 23 DB : schéma étendu à 27 modèles (+Region, NPC, NPCMemory, Player, PlayerInventory, PlayerProgression, Server, ServerSession, AssetVersion) — relations corrigées, prisma validate OK, db:push OK.
+
+Stage Summary:
+- 5/5 workflows GitHub Actions VERDS avec artefacts réels inspectés (APK contenu vérifié octet par octet).
+- E2E complet 43/43, storage 23/23, load tests 300 joueurs réels, tsc/lint/tests verts.
+- Bun.lock local, aucune dépendance ajoutée (archiver v8 corrigé en session précédente).

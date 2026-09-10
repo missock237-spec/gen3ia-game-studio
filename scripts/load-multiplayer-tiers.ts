@@ -3,6 +3,7 @@
 // joins OK, tick rate réel (server), latence E2E (echo via snapshot),
 // mémoire RSS, CPU, packet rate, inputs rejetés.
 // Usage: bun scripts/load-multiplayer-tiers.ts [paliers...] (défaut 2 10 50 100 300)
+import os from 'os'
 import { io } from 'socket.io-client'
 
 const URL = process.env.GAME_URL ?? 'http://localhost:3003'
@@ -16,7 +17,7 @@ interface Stats {
 }
 
 function cpuTotal(): { total: number; idle: number } {
-  const cpus = require('os').cpus()
+  const cpus = os.cpus()
   let total = 0; let idle = 0
   for (const c of cpus) {
     for (const k of Object.keys(c.times)) total += c.times[k as keyof typeof c.times]
