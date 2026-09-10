@@ -1,6 +1,7 @@
 // AI Provider Manager — real providers with routing, timeout, retry, circuit breaker,
 // usage tracking. Providers: z-ai (active in this environment) and Hugging Face
 // Inference Providers (active when HF_TOKEN is configured).
+import { createHash } from 'crypto'
 import ZAI from 'z-ai-web-dev-sdk'
 import { db } from '@/lib/db'
 
@@ -28,6 +29,39 @@ export interface AICompletionResult {
   latencyMs: number
   tokensIn: number
   tokensOut: number
+  cached?: boolean
+  estimatedCostUsd?: number
+}
+
+// ───────────────── Cache réponse (tâches déterministes) ─────────────────
+const responseCache = new Map<string, { result: AICompletionResult; expiresAt: number }>()
+const CACHE_TTL_MS = 10 * 60 * 1000
+const CACHE_MAX = 200
+
+function cacheKey(opts: AICompletionOptions): string {
+  const h = createHash('sha256')
+  h.update(JSON.stringify({ t: opts.task, m: opts.messages, tmp: opts.temperature ?? 0.7 }))
+  return h.digest('hex').slice(0, 32)
+}
+
+function cacheGet(key: string): AICompletionResult | null {
+  const hit = responseCache.get(key)
+  if (!hit) return null
+  if (Date.now() > hit.expiresAt) { responseCache.delete(key); return null }
+  return { ...hit.result, cached: true }
+}
+
+function cachePut(key: string, result: AICompletionResult) {
+  if (responseCache.size >= CACHE_MAX) {
+    const oldest = responseCache.keys().next().value
+    if (oldest) responseCache.delete(oldest)
+  }
+  responseCache.set(key, { result, expiresAt: Date.now() + CACHE_TTL_MS })
+}
+
+/** Coût estimé (USD) — bornes HF Llama-70B : 0,75$/M in, 1$/M out. */
+function estimateCost(tokensIn: number, tokensOut: number): number {
+  return Math.round(((tokensIn * 0.75 + tokensOut * 1) / 1_000_000) * 10000) / 10000
 }
 
 // ─────────────────────── Circuit breaker ───────────────────────
@@ -184,8 +218,15 @@ class AIProviderManager {
     return this.providers.map((p) => ({ name: p.name, available: p.available() }))
   }
 
-  /** Route by task, honoring circuit breakers, with automatic fallback. */
+  /** Route by task, honoring circuit breakers, cache and automatic fallback. */
   async complete(opts: AICompletionOptions): Promise<AICompletionResult> {
+    // cache uniquement pour les appels quasi déterministes (température basse)
+    const key = cacheKey(opts)
+    if ((opts.temperature ?? 0.7) <= 0.2) {
+      const hit = cacheGet(key)
+      if (hit) return hit
+    }
+
     const candidates = this.providers.filter((p) => p.available() && !breakerOpen(p.name))
     if (candidates.length === 0) throw new Error('Tous les fournisseurs IA sont indisponibles (circuit breaker ouvert)')
 
@@ -195,6 +236,8 @@ class AIProviderManager {
         try {
           const result = await provider.complete(opts)
           breakerSuccess(provider.name)
+          result.estimatedCostUsd = estimateCost(result.tokensIn, result.tokensOut)
+          if ((opts.temperature ?? 0.7) <= 0.2) cachePut(key, result)
           void this.track(opts, result, 'OK')
           return result
         } catch (e) {

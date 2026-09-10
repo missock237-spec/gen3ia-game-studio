@@ -79,6 +79,8 @@ model Project {
   snapshots   Snapshot[]
   builds      Build[]
   scripts     ScriptFile[]
+  chunks      SceneChunk[]
+  factions    Faction[]
 
   @@index([ownerId])
   @@index([updatedAt])
@@ -170,23 +172,54 @@ model Build {
   project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   userId      String
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  target      String // web | android | windows | linux | server
+  target      String // web | android | windows | linux | dedicated-server | github
   profile     String   @default("release") // debug | release
-  status      String   @default("QUEUED") // QUEUED | VALIDATING | BUILDING | TESTING | PACKAGING | UPLOADING | COMPLETED | FAILED | CANCELLED
+  version     String   @default("1.0.0") // version sémantique saisie au lancement
+  provider    String   @default("local") // local | google-cloud-build | github-actions
+  status      String   @default("QUEUED") // QUEUED | PREPARING | BUILDING | TESTING | PACKAGING | UPLOADING | COMPLETED | FAILED | CANCELLED
   progress    Int      @default(0) // 0..100
   logs        String   @default("[]") // array of {t, level, msg}
   artifactKey String?
   artifactUrl String?
   artifactSize Int?
+  attempt     Int      @default(0)
+  timeoutAt   DateTime? // deadline globale du build
+  cancelRequested Boolean @default(false)
   commitSha   String?
-  workflowId  String?
+  workflowId  String? // GitHub run id ou Cloud Build operation id
+  externalUrl String? // URL du run/operation externe
   error       String?
   startedAt   DateTime?
   completedAt DateTime?
   createdAt   DateTime @default(now())
 
+  artifacts   BuildArtifact[]
+
   @@index([projectId, createdAt])
   @@index([status])
+}
+
+// Artifact de build versionné — gros binaires JAMAIS en base, seulement la référence.
+model BuildArtifact {
+  id         String   @id @default(cuid())
+  projectId  String
+  buildId    String
+  build      Build    @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  target     String
+  version    String
+  kind       String   @default("primary") // primary | symbols | manifest
+  fileName   String
+  mimeType   String   @default("application/octet-stream")
+  size       Int
+  checksum   String // sha256 du contenu
+  storageKey String
+  provider   String   @default("local") // local | r2 | gcs
+  status     String   @default("READY") // READY | EXPIRED | DELETED
+  expiresAt  DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([buildId])
 }
 
 // ─────────────────────────── AI ───────────────────────────
@@ -237,6 +270,44 @@ model Zone {
   createdAt DateTime @default(now())
 
   @@index([worldId])
+}
+
+// ─────────────────────────── WORLD STREAMING ───────────────────────────
+
+// Chunk de monde — unité de streaming (grille cellSize × cellSize).
+// Les données de chunk (entités/terrain sérialisés) restent hors PostgreSQL
+// quand elles sont grosses : stockées via le Storage Adapter (storageKey).
+model SceneChunk {
+  id         String   @id @default(cuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  cx         Int // coordonnée cellule X
+  cz         Int // coordonnée cellule Z
+  name       String   @default("")
+  data       String   @default("{}") // entités du chunk (JSON validé Zod)
+  terrain    String   @default("{}") // params heightmap {seed, octaves, amplitude...}
+  entityCount Int     @default(0)
+  sizeBytes  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([projectId, cx, cz])
+  @@index([projectId])
+}
+
+// Factions NPC — réputation interservices partagée par monde.
+model Faction {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  color     String   @default("#9aa5b1")
+  // relations: {"Garde": -60, "Village": 40} (reputation -100..100)
+  relations String   @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([projectId, name])
 }
 
 // ─────────────────────────── OBSERVABILITY ───────────────────────────

@@ -1,21 +1,35 @@
-// Build Orchestrator — REAL build pipeline.
-// Web target: validate → esbuild bundle → tests (script syntax, scene checks)
-// → package standalone HTML → upload to storage → artifact URL.
-// GitHub target: dispatches GitHub Actions workflow and tracks the run.
-import { build as esbuild } from 'esbuild'
-import path from 'path'
+// Build Orchestrator — real multi-provider, multi-target pipeline.
+//
+// Targets & providers:
+//   web               → local pipeline (esbuild → standalone HTML)   [always available]
+//   dedicated-server  → local pipeline (server bundle → zip)          [always available]
+//   android/windows/linux → google-cloud-build if configured, else github-actions, else honest error
+//   github (legacy)   → github-actions web workflow
+//
+// Guarantees: full status machine (QUEUED…COMPLETED/FAILED/CANCELLED),
+// user cancellation, global timeout, retries, artifact registry (checksum).
+import crypto from 'crypto'
 import { db } from '@/lib/db'
 import { getStorage, sanitizeKey } from '@/lib/storage'
 import { sceneDocumentSchema } from '@/engine/types'
-import { getGitHubClient } from '@/lib/github'
+import {
+  BuildCancelledError, BuildTimeoutError,
+  type BuildContext, type BuildTarget, type CloudBuildProvider,
+} from '@/lib/build/types'
+import { runLocalWebBuild, runLocalServerBuild, buildManifest, sha256 } from '@/lib/build/local'
+import { googleCloudBuildProvider } from '@/lib/build/providers/google-cloud-build'
+import { gitHubActionsProvider } from '@/lib/build/providers/github-actions'
 
-type LogFn = (level: 'info' | 'warn' | 'error', msg: string) => Promise<void>
+type LogLevel = 'info' | 'warn' | 'error'
+const GLOBAL_TIMEOUT_MS = 60 * 60 * 1000 // 1 h
 
-async function appendLog(buildId: string, level: 'info' | 'warn' | 'error', msg: string) {
+// ─────────────────────────── logs / status ───────────────────────────
+
+async function appendLog(buildId: string, level: LogLevel, msg: string) {
   const build = await db.build.findUnique({ where: { id: buildId }, select: { logs: true } })
   const logs: Array<{ t: string; level: string; msg: string }> = build ? JSON.parse(build.logs) : []
   logs.push({ t: new Date().toISOString(), level, msg })
-  await db.build.update({ where: { id: buildId }, data: { logs: JSON.stringify(logs.slice(-500)) } })
+  await db.build.update({ where: { id: buildId }, data: { logs: JSON.stringify(logs.slice(-800)) } })
 }
 
 async function setStatus(buildId: string, status: string, progress?: number) {
@@ -25,150 +39,172 @@ async function setStatus(buildId: string, status: string, progress?: number) {
   })
 }
 
-function exportHtmlTemplate(sceneJson: string, bundleJs: string, gameTitle: string): string {
-  // Self-contained: engine bundle + embedded scene. Plays offline.
-  const safeJson = sceneJson.replace(/<\/script/gi, '<\\/script')
-  return `<!DOCTYPE html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<title>${gameTitle.replace(/</g, '&lt;')} — GEN3IA Export</title>
-<style>
-  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#0d1117;font-family:system-ui,sans-serif}
-  canvas{display:block;width:100vw;height:100vh;touch-action:none}
-  #boot-overlay{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0d1117;color:#e6edf3;z-index:10;transition:opacity .5s}
-  #boot-overlay h1{font-size:1.4rem;font-weight:600}
-  #boot-log{color:#8b949e;font-size:.8rem;margin-top:.5rem}
-</style>
-</head>
-<body>
-<div id="boot-overlay"><h1>${gameTitle.replace(/</g, '&lt;')}</h1><div>Chargement du moteur…</div><div id="boot-log"></div></div>
-<canvas id="game"></canvas>
-<script>window.__GEN3IA_EXPORT__=${safeJson};</script>
-<script>${bundleJs}</script>
-<script>
-  window.addEventListener('load', () => {
-    const o = document.getElementById('boot-overlay')
-    setTimeout(() => { o.style.opacity = '0'; setTimeout(() => o.remove(), 600) }, 300)
-  })
-</script>
-</body>
-</html>`
+// ─────────────────────────── context factory ───────────────────────────
+
+function makeContext(b: {
+  id: string; projectId: string; target: string; profile: string; version: string
+  project: { name: string; githubRepo: string | null; githubBranch: string }
+  timeoutAt: Date | null
+}): BuildContext {
+  const buildId = b.id
+  const ctx: BuildContext = {
+    buildId,
+    projectId: b.projectId,
+    projectName: b.project.name,
+    target: b.target as BuildTarget,
+    profile: (b.profile === 'debug' ? 'debug' : 'release'),
+    version: b.version,
+    githubRepo: b.project.githubRepo,
+    githubBranch: b.project.githubBranch,
+    log: (level, msg) => appendLog(buildId, level, msg),
+    setStatus: (status, progress) => setStatus(buildId, status, progress),
+    isCancelRequested: async () => {
+      const row = await db.build.findUnique({ where: { id: buildId }, select: { cancelRequested: true, status: true } })
+      return Boolean(row?.cancelRequested) || row?.status === 'CANCELLED'
+    },
+    assertNotTimedOut: async () => {
+      const row = await db.build.findUnique({ where: { id: buildId }, select: { timeoutAt: true } })
+      if (row?.timeoutAt && Date.now() > row.timeoutAt.getTime()) throw new BuildTimeoutError()
+    },
+    storeArtifact: async ({ fileName, mimeType, data, kind }) => {
+      const checksum = sha256(data)
+      const storage = getStorage()
+      const key = sanitizeKey(`builds/${buildId}/artifacts/${fileName}`)
+      await storage.put(key, data, mimeType)
+      const row = await db.buildArtifact.create({
+        data: {
+          projectId: b.projectId, buildId, target: ctx.target, version: ctx.version,
+          kind: kind ?? 'primary', fileName, mimeType,
+          size: data.length, checksum, storageKey: key, provider: storage.name,
+          status: 'READY',
+        },
+      })
+      await db.build.update({
+        where: { id: buildId },
+        data: { artifactKey: key, artifactSize: data.length, artifactUrl: `/api/builds/${buildId}/artifact` },
+      })
+      await ctx.log('info', `Artifact enregistré: ${fileName} (${Math.round(data.length / 1024)} KB, sha256 ${checksum.slice(0, 12)}…, ${storage.name})`)
+      return { id: row.id, checksum, size: data.length, storageKey: key }
+    },
+  }
+  return ctx
 }
+
+// ─────────────────────────── provider selection ───────────────────────────
+
+function providersForTarget(target: BuildTarget): CloudBuildProvider[] {
+  const all = [googleCloudBuildProvider, gitHubActionsProvider]
+  if (target === 'github') return [gitHubActionsProvider]
+  return all
+}
+
+function pickProvider(target: BuildTarget): { provider: CloudBuildProvider } | { error: string } {
+  for (const p of providersForTarget(target)) {
+    if (p.available()) return { provider: p }
+  }
+  const reasons = providersForTarget(target)
+    .map((p) => `— ${p.label}: ${p.unavailableReason()}`)
+    .join('\n')
+  return {
+    error: `Aucun fournisseur cloud disponible pour la cible '${target}'. Cette cible exige une chaîne de compilation native distante (Android SDK/Gradle, toolchain Windows…).\nConfigurez l'un des fournisseurs :\n${reasons}\nLa cible 'web' et le 'dedicated-server' restent disponibles localement.`,
+  }
+}
+
+// ─────────────────────────── scene validation (shared) ───────────────────────────
+
+async function loadValidatedScene(projectId: string, log: (l: LogLevel, m: string) => Promise<void>) {
+  const project = await db.project.findUnique({ where: { id: projectId }, select: { sceneData: true } })
+  const sceneRaw = JSON.parse(project?.sceneData || '{}')
+  const parsed = sceneDocumentSchema.safeParse(sceneRaw)
+  if (!parsed.success) {
+    throw new Error(`Scène invalide: ${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`)
+  }
+  const scriptEntities = Object.values(parsed.data.entities)
+    .filter((e) => (e as { components?: { script?: { source?: string; enabled?: boolean } } }).components?.script?.enabled) as
+    Array<{ name: string; components: { script: { source: string } } }>
+  for (const e of scriptEntities) {
+    try { new Function(e.components.script.source) } catch (err) {
+      throw new Error(`Script "${e.name}": erreur de syntaxe — ${err instanceof Error ? err.message : err}`)
+    }
+  }
+  await log('info', `Validation OK — ${Object.keys(parsed.data.entities).length} entités, ${scriptEntities.length} script(s)`)
+  return parsed.data
+}
+
+// ─────────────────────────── main entry ───────────────────────────
 
 export async function runBuild(buildId: string): Promise<void> {
   const build = await db.build.findUnique({ where: { id: buildId }, include: { project: true } })
   if (!build) return
-  const log: LogFn = (level, msg) => appendLog(buildId, level, msg)
+  const ctx = makeContext(build)
   try {
-    await db.build.update({ where: { id: buildId }, data: { startedAt: new Date() } })
+    const timeoutAt = new Date(Date.now() + GLOBAL_TIMEOUT_MS)
+    await db.build.update({
+      where: { id: buildId },
+      data: { startedAt: new Date(), timeoutAt, attempt: { increment: 1 } },
+    })
+    if (await ctx.isCancelRequested()) throw new BuildCancelledError()
 
-    // ── VALIDATING ──
-    await setStatus(buildId, 'VALIDATING', 10)
-    const sceneRaw = JSON.parse(build.project.sceneData || '{}')
-    const parsedScene = sceneDocumentSchema.safeParse(sceneRaw)
-    if (!parsedScene.success) {
-      throw new Error(`Scène invalide: ${parsedScene.error.issues.slice(0, 3).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`)
-    }
-    const scene = parsedScene.data
-    const entityCount = Object.keys(scene.entities).length
-    await log('info', `Validation OK — ${entityCount} entités, cible ${build.target}`)
+    // ── PREPARING — scene + script validation (all targets) ──
+    await ctx.setStatus('PREPARING', 10)
+    const scene = await loadValidatedScene(build.projectId, ctx.log)
+    await ctx.assertNotTimedOut()
 
-    // script syntax validation (real check, server-side, no execution)
-    const scriptEntities = Object.values(scene.entities).filter((e: { components?: { script?: { source?: string; enabled?: boolean } } }) => e.components?.script?.enabled)
-     
-    for (const e of scriptEntities as Array<{ name: string; components: { script: { source: string } } }>) {
-      try { new Function(e.components.script.source) } catch (err) {
-        throw new Error(`Script "${e.name}": erreur de syntaxe — ${err instanceof Error ? err.message : err}`)
-      }
-    }
-    await log('info', `Scripts validés (${scriptEntities.length})`)
+    const target = build.target as BuildTarget
 
-    if (build.target === 'github') {
-      // dispatch a GitHub Actions workflow on the connected repo
-      await setStatus(buildId, 'BUILDING', 30)
-      const gh = getGitHubClient()
-      const repo = build.project.githubRepo
-      if (!gh) throw new Error('GITHUB_TOKEN non configuré sur le serveur')
-      if (!repo) throw new Error('Aucun dépôt GitHub connecté au projet')
-      const [owner, name] = repo.split('/')
-      const workflows = await gh.listWorkflows(owner, name)
-      const wf = workflows.find((w) => w.path.includes('build-web.yml'))
-      if (!wf) throw new Error('build-web.yml introuvable dans le dépôt (poussez d\'abord le projet)')
-      await gh.dispatchWorkflow(owner, name, String(wf.id), build.project.githubBranch || 'main', {
-        projectId: build.projectId, commitSha: build.project.lastCommitSha ?? 'HEAD',
-        platform: 'web', configuration: build.profile, buildProfile: build.profile,
-        artifactDestination: 'game-export',
+    // ── local pipelines (web / dedicated-server) ──
+    if (target === 'web' || target === 'dedicated-server') {
+      const data = target === 'web'
+        ? await runLocalWebBuild(ctx, scene)
+        : await runLocalServerBuild(ctx, scene)
+      await ctx.assertNotTimedOut()
+      if (await ctx.isCancelRequested()) throw new BuildCancelledError()
+
+      await ctx.setStatus('UPLOADING', 90)
+      const fileName = target === 'web'
+        ? `gen3ia-web-${ctx.version}.html`
+        : `gen3ia-server-${ctx.version}.zip`
+      const stored = await ctx.storeArtifact({
+        fileName,
+        mimeType: target === 'web' ? 'text/html' : 'application/zip',
+        data,
       })
-      await log('info', `Workflow GitHub Actions déclenché (${wf.name})`)
-      await db.build.update({ where: { id: buildId }, data: { workflowId: String(wf.id), status: 'UPLOADING', progress: 60 } })
-      await setStatus(buildId, 'UPLOADING', 70)
-      await log('info', `Suivi: ${build.project.githubRepo} — branche ${build.project.githubBranch}`)
-      await setStatus(buildId, 'COMPLETED', 100)
+      // manifest artifact (checksum traceability)
+      await ctx.storeArtifact({
+        fileName: 'manifest.json', mimeType: 'application/json',
+        data: buildManifest(ctx, stored.checksum, stored.size), kind: 'manifest',
+      })
+      await ctx.setStatus('COMPLETED', 100)
       await db.build.update({ where: { id: buildId }, data: { completedAt: new Date() } })
-      await log('info', 'Build GitHub déclenché avec succès')
+      await ctx.log('info', 'Build COMPLETED ✔')
       return
     }
 
-    if (build.target !== 'web') {
-      throw new Error(`La cible '${build.target}' nécessite la toolchain native (GitHub Actions / Cloud Build). Utilisez la cible 'web' ou 'github'.`)
-    }
+    // ── cloud pipelines (android / windows / linux / github) ──
+    const picked = pickProvider(target === 'github' ? 'github' : target)
+    if ('error' in picked) throw new Error(picked.error)
+    const provider = picked.provider
+    await db.build.update({ where: { id: buildId }, data: { provider: provider.id } })
+    await ctx.log('info', `Fournisseur de build: ${provider.label}`)
 
-    // ── BUILDING (real esbuild bundle of the export runtime) ──
-    await setStatus(buildId, 'BUILDING', 30)
-    await log('info', 'Bundling du moteur (esbuild)…')
-    const result = await esbuild({
-      entryPoints: [path.join(process.cwd(), 'src/engine/export-runtime.ts')],
-      bundle: true,
-      minify: true,
-      format: 'iife',
-      target: 'es2020',
-      platform: 'browser',
-      write: false,
-      logLevel: 'silent',
-      define: { 'process.env.NODE_ENV': '"production"' },
-    })
-    const bundleJs = result.outputFiles[0].text
-    await log('info', `Bundle généré (${Math.round(bundleJs.length / 1024)} KB)`)
-
-    // ── TESTING ──
-    await setStatus(buildId, 'TESTING', 55)
-    if (entityCount === 0) throw new Error('Échec du test: scène vide')
-    const hasMesh = Object.values(scene.entities).some((e: { components?: { mesh?: unknown } }) => e.components?.mesh)
-    if (!hasMesh) await log('warn', 'Aucune entité avec mesh — rendu possiblement vide')
-    const hasSpawn = Object.values(scene.entities).some((e: { components?: { player?: unknown } }) => e.components?.player)
-    if (!hasSpawn) await log('warn', 'Aucun point d\'apparition (Player) — la caméra suivra le premier objet')
-    await log('info', 'Tests de validation du build: OK')
-
-    // ── PACKAGING ──
-    await setStatus(buildId, 'PACKAGING', 75)
-    const html = exportHtmlTemplate(JSON.stringify({ scene, quality: 'balanced' }), bundleJs, build.project.name)
-    await log('info', `Package HTML: ${Math.round(html.length / 1024)} KB`)
-
-    // ── UPLOADING ──
-    await setStatus(buildId, 'UPLOADING', 90)
-    const storage = getStorage()
-    const key = sanitizeKey(`builds/${buildId}/game.html`)
-    await storage.put(key, Buffer.from(html, 'utf8'), 'text/html')
-    await log('info', `Artifact uploadé (${storage.name}): ${key}`)
-
-    // ── COMPLETED ──
+    await ctx.setStatus('BUILDING', 30)
+    const launched = await provider.launch(ctx)
     await db.build.update({
       where: { id: buildId },
-      data: {
-        status: 'COMPLETED',
-        progress: 100,
-        artifactKey: key,
-        artifactSize: html.length,
-        artifactUrl: `/api/builds/${buildId}/artifact`,
-        completedAt: new Date(),
-      },
+      data: { workflowId: launched.externalId, externalUrl: launched.externalUrl ?? null, status: 'BUILDING' },
     })
-    await log('info', 'Build COMPLETED ✔')
+    await ctx.log('info', `Build distant lancé (id ${launched.externalId}). Le suivi se fait automatiquement (polling).`)
   } catch (e) {
+    if (e instanceof BuildCancelledError || (await db.build.findUnique({ where: { id: buildId }, select: { cancelRequested: true } }))?.cancelRequested) {
+      await ctx.log('warn', 'Build CANCELLED')
+      await db.build.update({
+        where: { id: buildId },
+        data: { status: 'CANCELLED', error: 'Annulé par l\'utilisateur', completedAt: new Date() },
+      })
+      return
+    }
     const msg = e instanceof Error ? e.message : String(e)
-    await log('error', `BUILD FAILED: ${msg}`)
+    await ctx.log('error', `BUILD FAILED: ${msg}`)
     await db.build.update({
       where: { id: buildId },
       data: { status: 'FAILED', error: msg.slice(0, 2000), completedAt: new Date() },
@@ -176,34 +212,81 @@ export async function runBuild(buildId: string): Promise<void> {
   }
 }
 
-/** Poll a GitHub-triggered build and update status from the workflow run. */
-export async function syncGitHubBuild(buildId: string): Promise<void> {
-  const build = await db.build.findUnique({ where: { id: buildId }, include: { project: true } })
-  if (!build || build.status !== 'UPLOADING' || !build.workflowId || !build.project.githubRepo) return
-  const gh = getGitHubClient()
-  if (!gh) return
+// ─────────────────────────── cloud sync (polling) ───────────────────────────
+
+const inFlight = new Set<string>()
+
+/** Poll one cloud build and update its local state. Safe to call concurrently. */
+export async function syncBuild(buildId: string): Promise<void> {
+  if (inFlight.has(buildId)) return
+  inFlight.add(buildId)
   try {
-    const [owner, name] = build.project.githubRepo.split('/')
-    const runs = await gh.listRuns(owner, name, build.workflowId, 3)
-    if (runs.length === 0) return
-    const run = runs[0]
-    const logs: Array<{ t: string; level: string; msg: string }> = JSON.parse(build.logs)
-    const known = logs.some((l) => l.msg.includes(`run ${run.id}`))
-    if (!known) {
-      logs.push({ t: new Date().toISOString(), level: 'info', msg: `GitHub run ${run.id}: ${run.status}${run.conclusion ? ` → ${run.conclusion}` : ''}` })
+    const build = await db.build.findUnique({ where: { id: buildId }, include: { project: true } })
+    if (!build) return
+    if (!['BUILDING', 'TESTING', 'PACKAGING', 'UPLOADING', 'QUEUED', 'PREPARING'].includes(build.status)) return
+    if (!build.workflowId) return
+    const provider = providersForTarget(build.target as BuildTarget)
+      .find((p) => p.id === build.provider)
+    if (!provider || !provider.available()) return
+
+    const ctx = makeContext(build)
+    const state = await provider.poll(ctx, build.workflowId)
+    if (state.logLine) {
+      const logs: Array<{ t: string; level: string; msg: string }> = JSON.parse(build.logs)
+      if (!logs.some((l) => l.msg === state.logLine)) await appendLog(buildId, 'info', state.logLine)
     }
-    let status = build.status
-    if (run.status === 'completed') {
-      status = run.conclusion === 'success' ? 'COMPLETED' : 'FAILED'
+    if (state.done) {
+      await db.build.update({
+        where: { id: buildId },
+        data: {
+          status: state.failed ? 'FAILED' : 'COMPLETED',
+          progress: state.progress,
+          error: state.error ?? null,
+          completedAt: new Date(),
+        },
+      })
+      await appendLog(buildId, state.failed ? 'error' : 'info', state.failed ? `BUILD FAILED: ${state.error ?? 'échec distant'}` : 'Build COMPLETED ✔ (distant)')
+    } else {
+      await db.build.update({ where: { id: buildId }, data: { status: state.status, progress: state.progress } })
     }
-    await db.build.update({
-      where: { id: buildId },
-      data: {
-        logs: JSON.stringify(logs.slice(-500)),
-        status,
-        ...(status === 'COMPLETED' || status === 'FAILED' ? { completedAt: new Date() } : {}),
-        ...(run.conclusion === 'success' ? { progress: 100 } : {}),
-      },
-    })
-  } catch { /* transient — retried on next poll */ }
+  } catch { /* transient — retried on next poll */ } finally {
+    inFlight.delete(buildId)
+  }
 }
+
+/** Poll all in-progress cloud builds (called from GET /builds). */
+export async function syncAllActiveBuilds(projectId: string): Promise<void> {
+  const active = await db.build.findMany({
+    where: {
+      projectId,
+      status: { in: ['BUILDING', 'TESTING', 'PACKAGING', 'UPLOADING'] },
+      provider: { not: 'local' },
+      workflowId: { not: null },
+    },
+    select: { id: true },
+    take: 5,
+  })
+  await Promise.allSettled(active.map((b) => syncBuild(b.id)))
+}
+
+// ─────────────────────────── cancellation ───────────────────────────
+
+export async function requestCancel(buildId: string): Promise<{ ok: boolean; message: string }> {
+  const build = await db.build.findUnique({ where: { id: buildId } })
+  if (!build) return { ok: false, message: 'Build introuvable' }
+  if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(build.status)) {
+    return { ok: false, message: `Build déjà terminé (${build.status})` }
+  }
+  await db.build.update({ where: { id: buildId }, data: { cancelRequested: true } })
+  await appendLog(buildId, 'warn', 'Annulation demandée…')
+  if (build.workflowId && build.provider !== 'local') {
+    const provider = providersForTarget(build.target as BuildTarget).find((p) => p.id === build.provider)
+    const ctxBuild = build as unknown as Parameters<typeof makeContext>[0]
+    const ctx = makeContext(ctxBuild)
+    await provider?.cancel?.(ctx, build.workflowId).catch(() => { /* best effort */ })
+  }
+  return { ok: true, message: 'Annulation enregistrée — les étapes locales s\'arrêtent à la prochaine vérification, le build distant reçoit un cancel.' }
+}
+
+export { sha256 }
+export function hashOf(data: Buffer): string { return crypto.createHash('sha256').update(data).digest('hex') }

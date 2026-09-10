@@ -1,0 +1,24 @@
+# GEN3IA — Build Android (APK réel via Gradle, runner ubuntu avec Android SDK).
+name: Build Android
+on:
+  workflow_dispatch:
+    inputs:
+      version: { description: 'Version sémantique', required: true, default: '1.0.0' }
+      buildProfile: { description: 'Profil (debug|release)', required: false, default: 'release' }
+      artifactName: { description: 'Nom de l artifact', required: false, default: 'gen3ia-android' }
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: android-actions/setup-android@v3
+      - name: Package WebView APK
+        run: bash scripts/packaging/package-android.sh "${{ inputs.version }}" "${{ inputs.buildProfile }}"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifactName }}-${{ inputs.version }}
+          path: dist/
+          if-no-files-found: error

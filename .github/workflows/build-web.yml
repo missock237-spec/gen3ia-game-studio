@@ -1,0 +1,25 @@
+# GEN3IA — Build Web : export HTML autonome jouable (réel, testé localement).
+name: Build Web
+on:
+  workflow_dispatch:
+    inputs:
+      version: { description: 'Version sémantique', required: true, default: '1.0.0' }
+      buildProfile: { description: 'Profil (debug|release)', required: false, default: 'release' }
+      projectId: { description: 'ID projet GEN3IA', required: false, default: '' }
+      artifactName: { description: 'Nom de l artifact', required: false, default: 'gen3ia-web' }
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Export HTML autonome
+        run: |
+          npm install --no-audit --no-fund esbuild three cannon-es --no-save
+          node scripts/packaging/export-web.mjs "${{ inputs.version }}" "${{ inputs.projectId }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifactName }}-${{ inputs.version }}
+          path: dist/
+          if-no-files-found: error

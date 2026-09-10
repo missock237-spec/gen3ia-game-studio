@@ -56,6 +56,60 @@ docker compose up -d          # PostgreSQL + Redis + game-server
 npm run build && npm start
 ```
 
+
+## Builds multi-cibles & fournisseurs cloud
+
+| Cible | Fournisseur | Résultat |
+|---|---|---|
+| `web` | **local** (toujours disponible) | HTML autonome jouable hors-ligne + `manifest.json` |
+| `dedicated-server` | **local** (toujours disponible) | zip Node prêt à déployer (`server.js`, `world.json`, `package.json`) |
+| `android` | Google Cloud Build **ou** GitHub Actions | APK réel (Gradle/WebView, `scripts/packaging/package-android.sh`) |
+| `windows` | GitHub Actions (runner `windows-latest`) | exe réel via Node SEA + client web |
+| `linux` | GitHub Actions / Cloud Build | tar.gz serveur dédié Linux |
+
+Machine à états complète : `QUEUED → PREPARING → BUILDING → TESTING → PACKAGING → UPLOADING → COMPLETED / FAILED / CANCELLED`,
+avec annulation utilisateur, timeout global (1 h), retries, logs temps réel et
+**registre d'artifacts** (`BuildArtifact`: id, version, taille, checksum SHA-256,
+clé de stockage, expiration). Téléchargement via **URL signée** (R2 SigV4 ou
+HMAC local). Sans configuration cloud, les cibles natives échouent avec un
+message expliquant exactement les variables à fournir — aucun faux build.
+
+Variables Google Cloud : `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_REGION`,
+`GOOGLE_APPLICATION_CREDENTIALS` (ou `GOOGLE_CLOUD_CREDENTIALS` en base64),
+`GCS_BUILD_BUCKET`. Variables GitHub : `GITHUB_TOKEN`. Les workflows
+`.github/workflows/build-{web,android,windows,linux,server}.yml` sont fournis.
+
+## Multijoueur MMO-ready
+
+- Serveur **autoritaire** socket.io : rooms/zones, tick 20 Hz (mesuré), snapshots 15 Hz
+- **Grille de hachage spatial** (cellules 40 m) pour l'interest management — plus de filtrage O(n²)
+- Réplication des entités du monde au join (`world.json` de l'artifact serveur dédié)
+- Anti-cheat : clamp anti-téléport, **rate limiting des inputs** (30 Hz) et du chat
+- Reconnexion par sessionToken (playerId restauré), heartbeat + timeout
+- Métriques: `/stats` (tick réel, rejets, mémoire, rooms, cellules)
+- **Test de charge réel**: `bun scripts/load-multiplayer.ts 300` → 300 clients, 100 % joins, tick 19,9 Hz, ~150 Mo RAM (mesuré sur l'instance de dev)
+
+## World streaming & terrain
+
+- `SceneChunk` (grille `cx,cz`) : API GET/PUT/DELETE `/api/projects/:id/chunks`
+- Terrain procédural réel : heightmap multi-octaves seedée, biomes de couleurs,
+  formes (plaine/collines/montagnes/îles), intégration physique
+- Streaming runtime : découpage par cellules, chargement/déchargement selon la
+  position joueur (rayon 2 cellules), frustum culling three.js natif
+
+## NPC AI (déterministe, locale)
+
+- Perception (vision/FOV/ouïe), mémoire fenêtrée, émotions
+- **Utility AI** (score d'actions) + **Behavior Tree** complet (sélecteur/séquence/feuilles)
+- Steering (poursuite/fuite/patrouille), dialogues via LLM serveur uniquement
+- Factions & réputation : API `/api/projects/:id/factions` (modèle `Faction`)
+
+## Observabilité
+
+- `GET /api/metrics` — users, projets, assets/bytes, builds par statut, IA 24 h
+  (requêtes, erreurs, tokens, latence moyenne, coût USD estimé), audit 24 h,
+  chunks, mémoire process. Scope `self` pour les utilisateurs, `admin` complet.
+
 ## Stack technique
 
 - **Front** : Next.js 16 (App Router), React 19, TypeScript strict, Tailwind 4,

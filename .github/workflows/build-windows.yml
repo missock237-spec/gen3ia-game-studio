@@ -1,0 +1,40 @@
+# GEN3IA — Build Windows : exécutable réel via Node SEA (Single Executable Application)
+# sur un runner windows-latest, plus le client web embarqué.
+name: Build Windows
+on:
+  workflow_dispatch:
+    inputs:
+      version: { description: 'Version sémantique', required: true, default: '1.0.0' }
+      buildProfile: { description: 'Profil (debug|release)', required: false, default: 'release' }
+      artifactName: { description: 'Nom de l artifact', required: false, default: 'gen3ia-windows' }
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Bundle serveur + SEA blob
+        shell: pwsh
+        run: |
+          npm install --no-audit --no-fund esbuild socket.io --no-save
+          node -e "const e=require('esbuild');const f=require('fs');e.build({entryPoints:['mini-services/game-server/index.ts'],bundle:true,minify:true,format:'cjs',target:'node20',platform:'node',write:false,logLevel:'silent',external:['socket.io'],define:{'process.env.NODE_ENV':'\"production\"'}}).then(r=>{f.mkdirSync('dist',{recursive:true});f.writeFileSync('dist/gen3ia-server.cjs',r.outputFiles[0].text);console.log('bundle OK')})"
+          node --experimental-sea-config sea-config.json
+          node -e "require('fs').copyFileSync(process.execPath,'dist/gen3ia-server.exe')"
+      - name: Injecter le blob SEA
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature dist\gen3ia-server.exe -ErrorAction SilentlyContinue
+          npx postject dist\gen3ia-server.exe NODE_SEA_BLOB dist\sea-prep.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
+      - name: Client web + manifest
+        shell: pwsh
+        run: |
+          node -e "const f=require('fs');f.writeFileSync('dist/README.txt','GEN3IA serveur Windows v${{ inputs.version }}\n\nLancer: gen3ia-server.exe (socket.io :3003, stats :3103)\n')"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifactName }}-${{ inputs.version }}
+          path: |
+            dist/gen3ia-server.exe
+            dist/README.txt
+          if-no-files-found: error

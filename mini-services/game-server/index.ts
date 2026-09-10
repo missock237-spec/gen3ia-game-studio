@@ -1,17 +1,40 @@
-// GEN3IA — Multiplayer game server (server-authoritative).
-// Rooms, 20Hz tick, presence, heartbeat, reconnect via session tokens,
-// interest management (distance culling), speed validation (anti-cheat).
+// GEN3IA — Multiplayer game server (server-authoritative, MMO-ready).
+// Rooms/zones, 20Hz tick, spatial hash grid (AOI), heartbeat, reconnect via
+// session tokens, entity replication (world.json), input rate limiting,
+// speed validation (anti-cheat), metrics.
 import { createServer } from 'http'
+import { readFileSync, existsSync } from 'fs'
 import { Server, type Socket } from 'socket.io'
 import { randomUUID } from 'crypto'
 
-const PORT = 3003
+const PORT = Number(process.env.GAME_SERVER_PORT ?? 3003)
+const STATS_PORT = Number(process.env.GAME_SERVER_STATS_PORT ?? 3103)
 const TICK_RATE = 20
 const TICK_MS = 1000 / TICK_RATE
 const SNAPSHOT_HZ = 15
 const HEARTBEAT_TIMEOUT = 12_000
-const INTEREST_RADIUS = 80
-const MAX_SPEED = 30 // units/s — server rejects faster movement
+const CELL_SIZE = 40 // spatial hash cell (interest grid)
+const MAX_SPEED = 30 // units/s — server clamps faster movement
+const MAX_INPUT_HZ = 30 // input rate limit (anti-spam)
+const MAX_CHAT_PER_10S = 8
+
+// Embedded world (dedicated-server artifact): world.json next to the bundle.
+interface WorldEntity {
+  name?: string
+  components?: { transform?: { position?: { x?: number; y?: number; z?: number } } }
+}
+interface WorldFile { name?: string; scene?: { entities?: Record<string, WorldEntity> }; server?: { tickRate?: number; snapshotHz?: number; maxSpeed?: number; interestRadius?: number } }
+let WORLD: WorldFile | null = null
+const WORLD_PATHS = ['world.json', path_cwd() + '/world.json']
+function path_cwd(): string { try { return process.cwd() } catch { return '.' } }
+for (const p of WORLD_PATHS) {
+  try {
+    if (p && existsSync(p)) { WORLD = JSON.parse(readFileSync(p, 'utf8')); console.log(`world chargé: ${p}`); break }
+  } catch { /* ignore */ }
+}
+const TICK_EFF = WORLD?.server?.tickRate ?? TICK_RATE
+const SNAP_EFF = WORLD?.server?.snapshotHz ?? SNAPSHOT_HZ
+const SPEED_EFF = WORLD?.server?.maxSpeed ?? MAX_SPEED
 
 interface PlayerState {
   id: string
@@ -24,6 +47,8 @@ interface PlayerState {
   anim: string
   lastSeen: number
   lastInput: number
+  inputCount: number
+  cell: { cx: number; cz: number }
 }
 
 interface Room {
@@ -31,18 +56,72 @@ interface Room {
   projectId: string
   zone: string
   players: Map<string, PlayerState>
+  grid: Map<string, Set<string>> // "cx,cz" -> playerIds
+  staticEntities: unknown[] // replicated scene entities (from world.json)
   createdAt: number
+  msgCount: number
+  rejectedInputs: number
 }
 
 const rooms = new Map<string, Room>()
-const sessions = new Map<string, PlayerState>() // sessionToken -> player (reconnect support)
+const sessions = new Map<string, PlayerState>() // sessionToken -> player (reconnect)
 const startedAt = Date.now()
+let totalConnections = 0
+let totalRejected = 0
+
+function cellOf(x: number, z: number): { cx: number; cz: number } {
+  return { cx: Math.floor(x / CELL_SIZE), cz: Math.floor(z / CELL_SIZE) }
+}
+
+function gridInsert(room: Room, p: PlayerState) {
+  const { cx, cz } = cellOf(p.x, p.z)
+  p.cell = { cx, cz }
+  const k = `${cx},${cz}`
+  let set = room.grid.get(k)
+  if (!set) { set = new Set(); room.grid.set(k, set) }
+  set.add(p.id)
+}
+
+function gridMove(room: Room, p: PlayerState, x: number, z: number) {
+  const next = cellOf(x, z)
+  if (next.cx !== p.cell.cx || next.cz !== p.cell.cz) {
+    const prev = room.grid.get(`${p.cell.cx},${p.cell.cz}`)
+    prev?.delete(p.id)
+    gridInsert(room, p)
+    p.x = x
+  }
+}
+
+/** AOI: players in the 3x3 cells around p (spatial partitioning). */
+function neighbors(room: Room, p: PlayerState): PlayerState[] {
+  const out: PlayerState[] = []
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dz = -1; dz <= 1; dz++) {
+      const set = room.grid.get(`${p.cell.cx + dx},${p.cell.cz + dz}`)
+      if (!set) continue
+      for (const id of set) {
+        if (id === p.id) continue
+        const o = room.players.get(id)
+        if (o) out.push(o)
+      }
+    }
+  }
+  return out
+}
 
 function getRoom(projectId: string, zone: string): Room {
   const key = `${projectId}:${zone}`
   let room = rooms.get(key)
   if (!room) {
-    room = { key, projectId, zone, players: new Map(), createdAt: Date.now() }
+    room = { key, projectId, zone, players: new Map(), grid: new Map(), staticEntities: [], createdAt: Date.now(), msgCount: 0, rejectedInputs: 0 }
+    // replicate world entities once per room (dedicated server artifact)
+    const worldScene = (WORLD as { scene?: { entities?: Record<string, WorldEntity> } } | null)?.scene
+    if (worldScene?.entities) {
+      room.staticEntities = Object.values(worldScene.entities).slice(0, 500).map((e) => ({
+        name: e.name ?? 'entity',
+        position: e.components?.transform?.position ?? { x: 0, y: 0, z: 0 },
+      }))
+    }
     rooms.set(key, room)
   }
   return room
@@ -63,20 +142,32 @@ const httpServer = createServer(() => {
   // all requests are handled by socket.io (path '/')
 })
 
-// internal stats server (server-to-server only, not exposed by the gateway)
+// stats server interne (server-to-server) — métriques complètes
 const statsServer = createServer((req, res) => {
-  if (req.url === '/stats') {
+  if (req.url === '/stats' || req.url === '/metrics') {
     const roomsInfo = [...rooms.values()].map((r) => ({
       key: r.key,
       projectId: r.projectId,
       zone: r.zone,
       players: r.players.size,
+      gridCells: r.grid.size,
+      staticEntities: r.staticEntities.length,
+      msgPerSec: r.msgCount,
+      rejectedInputs: r.rejectedInputs,
     }))
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({
-      tickRate: TICK_RATE,
+      tickRate: TICK_EFF,
+      realTickHz: Math.round(realTickHz * 10) / 10,
+      snapshotHz: SNAP_EFF,
+      maxSpeed: SPEED_EFF,
       rooms: roomsInfo,
       totalPlayers: [...rooms.values()].reduce((n, r) => n + r.players.size, 0),
+      totalConnections,
+      totalRejectedInputs: totalRejected,
+      sessionsTracked: sessions.size,
+      worldLoaded: Boolean(WORLD),
+      mem: process.memoryUsage().rss,
       uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
     }))
     return
@@ -84,7 +175,7 @@ const statsServer = createServer((req, res) => {
   res.writeHead(404)
   res.end()
 })
-statsServer.listen(3103, () => console.log('stats server on :3103'))
+statsServer.listen(STATS_PORT, () => console.log(`stats server on :${STATS_PORT}`))
 
 const io = new Server(httpServer, {
   path: '/',
@@ -94,6 +185,7 @@ const io = new Server(httpServer, {
 })
 
 io.on('connection', (socket: Socket) => {
+  totalConnections += 1
   let joined: { room: Room; player: PlayerState } | null = null
 
   socket.on('join', (data: {
@@ -134,39 +226,52 @@ io.on('connection', (socket: Socket) => {
     }
 
     room.players.set(player.id, player)
+    gridInsert(room, player)
     joined = { room, player }
     void socket.join(room.key)
 
     socket.emit('joined', {
       you: player,
       roomKey: room.key,
-      tickRate: TICK_RATE,
+      worldName: WORLD?.name ?? null,
+      tickRate: TICK_EFF,
+      snapshotHz: SNAP_EFF,
+      entities: room.staticEntities,
       players: [...room.players.values()].filter((p) => p.id !== player!.id),
     })
     socket.to(room.key).emit('player-joined', { player })
     ack?.({ ok: true, playerId: player.id, sessionToken: player.sessionToken })
   })
 
-  // client input (15Hz max client-side) — server validates speed then becomes authoritative
+  // client input (rate-limited) — server validates speed then becomes authoritative
   socket.on('state', (data: { x?: number; y?: number; z?: number; rx?: number; ry?: number; anim?: string }) => {
     if (!joined) return
-    const { player } = joined
+    const { player, room } = joined
     const now = Date.now()
-    const dtSec = Math.max(0.016, (now - player.lastInput) / 1000)
+    // anti-spam: input rate limit (MAX_INPUT_HZ with 1.5x burst tolerance)
+    const dtRaw = (now - player.lastInput) / 1000
+    if (dtRaw > 0 && dtRaw < 1 / (MAX_INPUT_HZ * 1.5)) {
+      room.rejectedInputs += 1
+      totalRejected += 1
+      return
+    }
+    const dtSec = Math.max(0.016, dtRaw)
     player.lastInput = now
 
     if (typeof data.x === 'number' && typeof data.z === 'number') {
       const dx = data.x - player.x
       const dz = data.z - player.z
       const dist = Math.hypot(dx, dz)
-      const maxDist = MAX_SPEED * dtSec * 1.5 // tolerance
+      const maxDist = SPEED_EFF * dtSec * 1.5 // tolerance
       if (dist > maxDist && dist > 0.001) {
         // clamp: reject teleport-like movement (server authority)
         const scale = maxDist / dist
-        player.x += dx * scale
-        player.z += dz * scale
+        const nx = player.x + dx * scale
+        const nz = player.z + dz * scale
+        gridMove(room, player, nx, nz)
+        player.z = nz
       } else {
-        player.x = data.x
+        gridMove(room, player, data.x, data.z)
         player.z = data.z
       }
     }
@@ -174,17 +279,23 @@ io.on('connection', (socket: Socket) => {
     if (typeof data.ry === 'number' && Number.isFinite(data.ry)) player.ry = data.ry
     if (typeof data.rx === 'number' && Number.isFinite(data.rx)) player.rx = data.rx
     if (typeof data.anim === 'string') player.anim = sanitize(data.anim, 16, 'idle')
+    room.msgCount += 1
   })
 
   socket.on('chat', (data: { text?: string }) => {
     if (!joined) return
+    const now = Date.now()
+    const p = joined.player as PlayerState & { chatTimes?: number[] }
+    p.chatTimes = (p.chatTimes ?? []).filter((t) => now - t < 10_000)
+    if (p.chatTimes.length >= MAX_CHAT_PER_10S) return
+    p.chatTimes.push(now)
     const text = sanitize(data.text, 200, '')
     if (!text) return
     io.to(joined.room.key).emit('chat', {
       from: joined.player.name,
       color: joined.player.color,
       text,
-      at: Date.now(),
+      at: now,
     })
   })
 
@@ -197,6 +308,7 @@ io.on('connection', (socket: Socket) => {
     const { room, player } = joined
     // keep the session for reconnect (sessions map), remove from live room
     room.players.delete(player.id)
+    room.grid.get(`${player.cell.cx},${player.cell.cz}`)?.delete(player.id)
     socket.to(room.key).emit('player-left', { playerId: player.id })
     if (room.players.size === 0) {
       setTimeout(() => {
@@ -206,23 +318,30 @@ io.on('connection', (socket: Socket) => {
   })
 })
 
-// ─────────────────── tick loop: authoritative snapshots ───────────────────
+// ─────────────────── tick loop: authoritative snapshots (spatial grid) ───────────────────
 let snapshotTimer = 0
+let lastTickAt = Date.now()
+let realTickHz = TICK_EFF
 setInterval(() => {
   const now = Date.now()
+  // mesure du tick rate réel (métrique)
+  const elapsed = now - lastTickAt
+  if (elapsed > 0) realTickHz = realTickHz * 0.95 + (1000 / elapsed) * 0.05
+  lastTickAt = now
 
   // heartbeat timeout — drop silent players
   for (const room of rooms.values()) {
     for (const [id, p] of room.players) {
       if (now - p.lastSeen > HEARTBEAT_TIMEOUT) {
         room.players.delete(id)
+        room.grid.get(`${p.cell.cx},${p.cell.cz}`)?.delete(id)
         io.to(room.key).emit('player-left', { playerId: id, reason: 'timeout' })
       }
     }
   }
 
   snapshotTimer += TICK_MS
-  if (snapshotTimer >= 1000 / SNAPSHOT_HZ) {
+  if (snapshotTimer >= 1000 / SNAP_EFF) {
     snapshotTimer = 0
     for (const room of rooms.values()) {
       const all = [...room.players.values()]
@@ -230,11 +349,8 @@ setInterval(() => {
       for (const p of all) {
         const socket = p.socketId ? io.sockets.sockets.get(p.socketId) : null
         if (!socket) continue
-        // interest management: only players within radius
-        const visible = all.filter(
-          (o) => o.id !== p.id &&
-            (Math.abs(o.x - p.x) + Math.abs(o.z - p.z)) < INTEREST_RADIUS,
-        )
+        // interest management via spatial hash grid (3x3 cellules)
+        const visible = neighbors(room, p)
         socket.emit('snapshot', {
           t: now,
           players: visible.map((o) => ({ id: o.id, name: o.name, color: o.color, x: o.x, y: o.y, z: o.z, ry: o.ry, anim: o.anim })),
@@ -245,7 +361,7 @@ setInterval(() => {
 }, TICK_MS)
 
 httpServer.listen(PORT, () => {
-  console.log(`GEN3IA multiplayer game server on :${PORT} (tick ${TICK_RATE}Hz)`)
+  console.log(`GEN3IA multiplayer game server on :${PORT} (tick ${TICK_EFF}Hz, world: ${WORLD ? 'chargé' : 'aucun'})`)
 })
 
 process.on('SIGTERM', () => { httpServer.close(() => process.exit(0)) })

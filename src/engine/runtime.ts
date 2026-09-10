@@ -48,6 +48,14 @@ export class GameRuntime {
   private time = 0
   private lastStep = 0
   private snapshotBeforePlay = ''
+  // world streaming (cellules): état du gestionnaire de chunks
+  private streaming = {
+    enabled: false, cellSize: 100, radius: 2,
+    currentCell: { cx: 0, cz: 0 },
+    cells: new Map<string, string[]>(), // "cx,cz" -> entityIds
+    loaded: new Set<string>(),
+    lastCheck: 0,
+  }
   private keys = new Set<string>()
   private pointer = { x: 0, y: 0, down: false }
   private audioCtx: AudioContext | null = null
@@ -161,6 +169,8 @@ export class GameRuntime {
       this.entitiesRt.set(id, rt)
     }
 
+    this.setupStreaming()
+
     // script starts
     for (const [id, rt] of this.entitiesRt) {
       if (rt.entity.components.script?.enabled) {
@@ -242,6 +252,7 @@ export class GameRuntime {
 
   private simulate(dt: number) {
     this.time += dt
+    this.tickStreaming()
     const t0 = performance.now()
     if (this.physics) {
       const objects = new Map<string, THREE.Object3D>()
@@ -355,7 +366,81 @@ export class GameRuntime {
     }
   }
 
-  // ───────────────── script ctx ─────────────────
+  // ───────────────── world streaming (cellules) ─────────────────
+  /** Découpe les entités en cellules et charge/décharge selon la position joueur. */
+  private setupStreaming() {
+    const wc = this.doc.doc.worldConfig
+    this.streaming.enabled = Boolean(wc.streamingEnabled)
+    if (!this.streaming.enabled) return
+    this.streaming.cellSize = wc.cellSize > 0 ? wc.cellSize : 100
+    this.streaming.cells.clear()
+    this.streaming.loaded.clear()
+    for (const [id, rec] of this.renderer.getObjects()) {
+      const p = rec.built.root.position
+      const cx = Math.floor(p.x / this.streaming.cellSize)
+      const cz = Math.floor(p.z / this.streaming.cellSize)
+      const key = `${cx},${cz}`
+      const list = this.streaming.cells.get(key) ?? []
+      list.push(id)
+      this.streaming.cells.set(key, list)
+    }
+    this.updateStreamingCells(true)
+    this.deps.log('info', `Streaming du monde actif — ${this.streaming.cells.size} cellules (taille ${this.streaming.cellSize} m, rayon ${this.streaming.radius})`)
+  }
+
+  private updateStreamingCells(initial = false) {
+    const s = this.streaming
+    const objects = this.renderer.getObjects()
+    let loadedCount = 0
+    let unloadedCount = 0
+    for (const [key, ids] of s.cells) {
+      const [cx, cz] = key.split(',').map(Number)
+      const dist = Math.max(Math.abs(cx - s.currentCell.cx), Math.abs(cz - s.currentCell.cz))
+      const shouldLoad = dist <= s.radius
+      const isLoaded = s.loaded.has(key)
+      if (shouldLoad && !isLoaded) {
+        for (const id of ids) {
+          const rec = objects.get(id)
+          if (rec) rec.built.root.visible = rec.entity.visible !== false
+        }
+        s.loaded.add(key)
+        loadedCount++
+      } else if (!shouldLoad && isLoaded) {
+        for (const id of ids) {
+          const rec = objects.get(id)
+          if (rec) rec.built.root.visible = false
+        }
+        s.loaded.delete(key)
+        unloadedCount++
+      }
+    }
+    if (!initial && (loadedCount > 0 || unloadedCount > 0)) {
+      this.deps.log('info', `Streaming: +${loadedCount} chunk(s) chargé(s), -${unloadedCount} déchargé(s)`)
+    }
+  }
+
+  private tickStreaming() {
+    if (!this.streaming.enabled) return
+    // 4 vérifications/seconde suffisent
+    if (this.time - this.streaming.lastCheck < 0.25) return
+    this.streaming.lastCheck = this.time
+    // entité joueur = premier player spawn, sinon origine
+    let px = 0
+    let pz = 0
+    for (const rt of this.entitiesRt.values()) {
+      if (rt.entity.components.player?.isSpawn) {
+        const rec = this.renderer.getObjects().get(rt.entity.id)
+        if (rec) { px = rec.built.root.position.x; pz = rec.built.root.position.z }
+        break
+      }
+    }
+    const cx = Math.floor(px / this.streaming.cellSize)
+    const cz = Math.floor(pz / this.streaming.cellSize)
+    if (cx !== this.streaming.currentCell.cx || cz !== this.streaming.currentCell.cz) {
+      this.streaming.currentCell = { cx, cz }
+      this.updateStreamingCells()
+    }
+  }
   private buildCtx(entityId: string, dt = 0): ScriptCtx {
     const rec = this.renderer.getObjects().get(entityId)
     const obj = rec?.built.root

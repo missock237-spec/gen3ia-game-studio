@@ -3,7 +3,7 @@ import { createHash } from 'crypto'
 import { db } from '@/lib/db'
 import { requireUser, requireProjectAccess } from '@/lib/auth'
 import { apiError, handleApiError, audit, rateLimit } from '@/lib/api-utils'
-import { getStorage, assetKindFromMime, sanitizeKey } from '@/lib/storage'
+import { getStorage, assetKindFromMime, sanitizeKey, getProjectUsageBytes, PROJECT_QUOTA_BYTES } from '@/lib/storage'
 
 const MAX_SIZE = 100 * 1024 * 1024 // 100 MB
 
@@ -37,7 +37,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     const form = await req.formData()
     const file = form.get('file') as File | null
     if (!file) return apiError(400, 'VALIDATION', 'Fichier manquant')
-    if (file.size > MAX_SIZE) return apiError(413, 'FILE_TOO_LARGE', `Fichier trop volumineux (max ${MAX_SIZE / 1024 / 1024} MB)`)
+    if (file.size > MAX_SIZE) return apiError(413, 'FILE_TOO_LARGE', `Fichier trop volumineux (max ${MAX_SIZE / 1024 / 1024} MB — utilisez l'upload multipart)`)
+    const usage = await getProjectUsageBytes(id)
+    if (usage + file.size > PROJECT_QUOTA_BYTES) {
+      return apiError(413, 'QUOTA_EXCEEDED', 'Quota de stockage du projet dépassé')
+    }
     const folder = (form.get('folder') as string) || '/'
 
     const buffer = Buffer.from(await file.arrayBuffer())

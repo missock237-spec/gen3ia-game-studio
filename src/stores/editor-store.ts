@@ -2,7 +2,7 @@
 'use client'
 import { create } from 'zustand'
 import { SceneDoc, createStarterScene } from '@/engine/scene'
-import type { EntityData, ComponentType, ComponentData } from '@/engine/types'
+import type { EntityData, ComponentType, ComponentData , ComponentBag } from '@/engine/types'
 import type { TransformTool, CameraMode, QualityMode, RendererStats } from '@/engine/renderer'
 import type { RuntimeState, RuntimeStats } from '@/engine/runtime'
 
@@ -81,7 +81,7 @@ interface EditorState {
 
   // scene ops
   selectEntity: (id: string | null, additive?: boolean) => void
-  addEntity: (name: string, components?: Partial<Record<ComponentType, ComponentData>>) => EntityData | null
+  addEntity: (name: string, components?: ComponentBag) => EntityData | null
 }
 
 let logId = 0
