@@ -73,3 +73,23 @@ Stage Summary:
 - 5/5 workflows GitHub Actions VERDS avec artefacts réels inspectés (APK contenu vérifié octet par octet).
 - E2E complet 43/43, storage 23/23, load tests 300 joueurs réels, tsc/lint/tests verts.
 - Bun.lock local, aucune dépendance ajoutée (archiver v8 corrigé en session précédente).
+
+---
+Task ID: 4
+Agent: Super Z (session principale)
+Task: Phases 15-30 — culling, NPCs, sandbox étendu, sécurité, mobile, CI, README, rapport final.
+
+Work Log:
+- PHASE 15 : src/engine/culling.ts (frustum + distance + LOD, throttlé 10 Hz) intégré au renderer (actif en PLAY ou > 40 entités), stats exposées au profiler.
+- PHASE 17 : API NPCs complète (GET/POST /npcs, PATCH/DELETE/POST mémoire) — persistance personnalité/schedule/dialogue + mémoires (testé : création "Garde Roland" + mémoire meeting sentiment 25).
+- PHASE 20 : ctx.scene (despawn/respawn réels via physique+renderer), ctx.time (frame counter), ctx.audio (WebAudio réel), ctx.network (bridge optionnel, avertissement honnête si absent), ctx.ui — lint no-this-alias corrigé proprement.
+- PHASE 21 MOBILE : layout bottom-nav existant validé au navigateur (390×844) — BUG MULTIPLAYER TROUVÉ ET CORRIGÉ : la gateway ne route pas XTransformPort et le XHR engine.io ne suit pas les 308 → serveur socket.io sur path /mp/ + proxy Next.js /api/mp (polling) + client io('/', { path: '/api/mp' }) ; join réel validé desktop ET mobile au navigateur ("Serveur de jeu connecté (tick 20Hz)", 1 joueur dans la zone, chat actif) ; scripts de test migrés vers path /mp/.
+- PHASE 25 SÉCURITÉ : scripts/test-security.ts 16/16 — VULNÉRABILITÉ RÉELLE corrigée : upload acceptait de faux PNG (flag corrupted sans rejet) → 415 + SVG anti-XSS strict ; E2E rejoué sans régression (43/43).
+- PHASE 24 : /api/metrics + multiplayer (sonde réelle game-server, online:false honnête) + CPU (cpuUsage/uptime).
+- PHASE 26 : .github/workflows/ci.yml (lint→typecheck strict→prisma validate→tests→build→E2E+multi+sécurité) ; premier échec (DATABASE_URL manquant pour prisma validate) corrigé.
+- PHASE 27-28 : docker-compose avec service app (docker/app.Dockerfile multi-stage, healthchecks, stop_grace_period, profil full) — non exécutable ici (pas de Docker), documenté honnêtement ; .env.example complété.
+- PHASE 29 : README réécrit avec légende ✅ VERIFIED / 🟡 PARTIAL / ❌ NOT SUPPORTED — chaque ligne reliée à une preuve de test ; limites explicites.
+- PHASE 30 : docs/REPORT.md (rapport final 14 sections).
+
+Stage Summary:
+- 16 suites de validation vertes ; 5 workflows de build GitHub verts avec artifacts inspectés ; multiplayer navigateur réel (desktop+mobile) ; 1 vulnérabilité corrigée ; 3 bugs bloquants corrigés (IA JSON, sync x, connexion navigateur).
